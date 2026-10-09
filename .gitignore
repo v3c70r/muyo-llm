@@ -1,0 +1,9 @@
+build*/
+compile_commands.json
+.cache/
+.tools/
+*.swp
+*.user
+*.DS_Store
+*tags
+cscope.out
