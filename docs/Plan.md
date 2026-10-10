@@ -30,7 +30,7 @@ multi-session serving; training; prefill/batching (deferred to v2); quantization
 - **Model:** Qwen2.5-0.5B (GQA: asymmetric KV head count, which exercises the KV cache).
 - **Shaders:** llama.cpp's Vulkan compute shaders (`ggml-vulkan/vulkan-shaders`), reused as
   source and compiled by us. `ggml-vulkan` itself is not linked.
-- **Platform:** Vulkan 1.3+, cooperative matrix required (§5.3) — and absent from the development GPU.
+- **Platform:** Vulkan 1.3+, cooperative matrix required (§5.3) — present on this GPU via AMDVLK, absent via RADV.
 
 ## 3. Why this workload
 
@@ -109,31 +109,30 @@ Decision: target Vulkan 1.3+ and use cooperative matrix where available; do not 
 separate non-coopmat path. **That decision is what makes this blocking** — with no fallback, enablement is a
 prerequisite for the implementation rather than for one milestone.
 
-**And the local device does not support it.** The extension list was previously read from an unqualified
-`vulkaninfo | grep cooperative_matrix`, which does not say which GPU a line belongs to; probing per physical
-device gives the opposite of what that suggested:
+**Where it is available on this machine, and where it is not.** The extension list was previously read
+from an unqualified `vulkaninfo | grep cooperative_matrix`, which does not say which GPU a line belongs to.
+Probing per physical device and per ICD:
 
-```
-== AMD Radeon Graphics (RADV REMBRANDT)   KHR_cooperative_matrix=no   rev=0
-== llvmpipe (LLVM 21.1.8, 256 bits)       KHR_cooperative_matrix=YES  rev=2
-     feature: cooperativeMatrix=1 robustBufferAccess=1
-     F16/F16->F32: M=8 N=8 K=8 scope=3 saturating=0   (4 property sets)
-```
+| Device | Driver | `VK_KHR_cooperative_matrix` | F16/F16->F32 |
+| --- | --- | --- | --- |
+| AMD Radeon Graphics (RADV REMBRANDT) | RADV, RDNA2 | **no** | - |
+| AMD Radeon Graphics | AMDVLK | **YES, rev 2** | **M=16 N=16 K=16**, 11 property sets |
+| llvmpipe | lavapipe | YES, rev 2 | M=8 N=8 K=8 |
 
-So the extension is present only on the **software** device. The real GPU is RDNA2 (`deviceID 0x1681`), and
-`RADV_PERFTEST=coopmat`, `RADV_PERFTEST=coopmat1` and `RADV_DEBUG=coopmat` do not change that.
+So the shape these kernels need **is** reachable on this machine's GPU - through AMDVLK, which the
+package installs alongside RADV. Two things to know:
 
-**This is a decision to take, not a detail.** Three options, and they differ in what gets validated:
+- **AMDVLK is opt-in.** Its package ships an implicit `VK_LAYER_AMD_switchable_graphics_64` layer which,
+  when active, replaces device enumeration for every application rather than adding a device; the session
+  disables it so the desktop keeps RADV, and selects AMDVLK explicitly with
+  `VK_DRIVER_FILES=/etc/vulkan/icd.d/amd_icd64.json`.
+- **The property sets are driver-specific.** AMDVLK advertises 16x16x16 among eleven sets; llvmpipe
+  advertises 8x8x8. A test that assumes a shape is testing the driver, so the shape used should come from
+  the queried properties rather than from a constant.
 
-- **a second machine** with a GPU that exposes it (RDNA3+ or an Ada-class NVIDIA part) — the only option where
-  the coopmat path is exercised for real, and therefore the only one that can measure anything;
-- **a fallback path** through the generic `mul_mm.comp` — contradicts the decision above, but would make the
-  project runnable here;
-- **llvmpipe** — enough to prove correctness of the wiring, and *not* enough to mean anything about
-  performance, since it is a CPU rasteriser.
-
-Recorded here rather than left implicit because the cost of discovering it at the first GEMM dispatch is a
-debugging session against a device that was never going to run the kernel.
+This makes the development path workable without a second machine, and it narrows the decision above to
+one question that remains open: **whether the coopmat path must also run on RADV**, where llama.cpp's
+`COOPMAT` kernels cannot. That is a fallback-path question, not a hardware-availability one.
 
 But Muyo never queries or enables it at all (`grep -rni cooperative_matrix src/ docs/ CMakeLists.txt`
 → no matches) and its device creation only enables `synchronization2` and `timelineSemaphore`
@@ -305,8 +304,8 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
 ## 11. Open items
 
 - Muyo #63, cooperative-matrix enablement — blocking, since the plan carries no non-coopmat fallback.
-- **Decide where the coopmat path runs** (§5.3): a second machine, a fallback path, or llvmpipe for
-  correctness only. The development GPU cannot run it.
+- **Decide whether the coopmat path must also run on RADV** (§5.3). It cannot today: RADV does not expose
+  the extension, while AMDVLK on the same GPU does. So the open question is a fallback path, not hardware.
 - Muyo #68, so this project can be configured at all: the submodule plus `add_subdirectory` integration
   fails to configure today (measured, §2).
 - File (or fold into #53) shader-source injection.

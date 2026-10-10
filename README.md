@@ -14,10 +14,10 @@ architecture validation first and an inference engine second.
   takes the width from reflection, so this no longer blocks anything.
 - **Upstream blocker:** cooperative-matrix enablement, [Muyo #63](https://github.com/v3c70r/Muyo/issues/63) —
   the plan carries no non-coopmat fallback, so this blocks the implementation rather than one milestone.
-- **And the development machine's GPU does not have it.** `VK_KHR_cooperative_matrix` is exposed by the
-  **software** device (llvmpipe, rev 2) and **not** by the real one (RADV, RDNA2, `deviceID 0x1681`). Where
-  this project runs its coopmat path — a second machine, a fallback path, or llvmpipe for correctness only —
-  is a decision, and §5.3 records it as one.
+- **It is available on this machine, but not through the default driver.** RADV (RDNA2, `deviceID 0x1681`)
+  does **not** expose `VK_KHR_cooperative_matrix`; the installed **AMDVLK** does — rev 2 with
+  `F16/F16->F32 M=16 N=16 K=16` among its eleven property sets, which is the shape llama.cpp's `COOPMAT`
+  kernels use. AMDVLK is opt-in here: `VK_DRIVER_FILES=/etc/vulkan/icd.d/amd_icd64.json`. See §5.3.
 - **Specialization constants:** landed in [Muyo PR #66](https://github.com/v3c70r/Muyo/pull/66); no longer a gap.
 - **Also blocking starting:** Muyo cannot be configured as a subdirectory today — [Muyo #68](https://github.com/v3c70r/Muyo/issues/68).
 
