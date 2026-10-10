@@ -56,7 +56,7 @@ render frame and can follow.
 | Area | Decision | Rationale |
 | --- | --- | --- |
 | Repository | `muyo-llm`, separate from Muyo | Keeps consumer and library separate; same owner (`v3c70r`). |
-| Consuming Muyo | git submodule + `add_subdirectory`, link `muyo_rg` | **Measured: this does not work yet.** A two-file probe fails to configure - `CMAKE_SOURCE_DIR` resolves to the consumer's root and 28 paths are built from it, so `add_subdirectory` looks for `thirdparty/glfw` in *our* tree. Filed as Muyo #68; small and separate from the library work (#53), because it only needs Muyo to be embeddable, not `muyo_rg` to stand alone. |
+| Consuming Muyo | git submodule + `add_subdirectory`, link `muyo_rg` | **Works as of Muyo #68**, merged `0617102`. A two-file probe configures, builds, links and runs, with Muyo's libraries landing in the consumer's `build/muyo/`. Four properties of the embed carry over and are prerequisites, not bugs: configure still needs the **Vulkan SDK on the environment** (`slangc` and `glslangValidator` are checked unconditionally, Muyo `CMakeLists.txt:130,146`), still needs **network** (VMA is fetched; Catch2 no longer is), third-party **target names are global** (`stb`, `glfw`, `imgui` … — a collision would name neither project), and linking `muyo_rg` pulls `muyo` with it, which is the accepted coupling. Filed as Muyo #73 to close the last three. |
 | Shaders | Vendor llama.cpp `vulkan-shaders` sources + our own `glslc` rules | No `ggml-vulkan` dependency; only sources and contracts. |
 | Shader contract layer | Per-op C++ wrapper replicating defines, spec constants, push-constant struct and bindings | Muyo has no such layer; this is the bulk of the work. |
 | Push constants | Define the struct in muyo-llm; `vkCmdPushConstants` inside the node callback using `ctx.pipelineLayout` | Works today (see §5.1); no upstream change needed. |
@@ -319,8 +319,10 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
   driver + validation-layer pairing, which matters here because picking a kernel shape needs them.
 - **Decide whether the coopmat path must also run on RADV** (§5.3). It cannot today: RADV does not expose
   the extension, while AMDVLK on the same GPU does. So the open question is a fallback path, not hardware.
-- Muyo #68, so this project can be configured at all: the submodule plus `add_subdirectory` integration
-  fails to configure today (measured, §2).
+- Muyo #68 **landed** (`0617102`): the submodule plus `add_subdirectory` integration configures. What
+  remains from it is prerequisites rather than blockers — the Vulkan SDK on the environment for
+  `slangc`/`glslangValidator`, network at configure for VMA, and global third-party target names — filed
+  as Muyo #73, which also carries the install/export set we are not waiting for.
 - File (or fold into #53) shader-source injection.
 - `docs/Assessment.md` lives in this repository (decided).
 - muyo-llm is registered in Muyo as a first-party architecture-validation consumer; Muyo's

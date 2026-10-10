@@ -23,6 +23,6 @@ architecture validation first and an inference engine second.
   `F16/F16->F32 M=16 N=16 K=16` among its eleven property sets, which is the shape llama.cpp's `COOPMAT`
   kernels use. AMDVLK is opt-in here: `VK_DRIVER_FILES=/etc/vulkan/icd.d/amd_icd64.json`. See §5.3.
 - **Specialization constants:** landed in [Muyo PR #66](https://github.com/v3c70r/Muyo/pull/66); no longer a gap.
-- **Also blocking starting:** Muyo cannot be configured as a subdirectory today — [Muyo #68](https://github.com/v3c70r/Muyo/issues/68).
+- **Buildable:** [Muyo #68](https://github.com/v3c70r/Muyo/issues/68) landed (`0617102`) — the submodule plus `add_subdirectory` integration configures, builds and runs. Prerequisites: the Vulkan SDK on the environment (`slangc`, `glslangValidator`) and network at configure (VMA is fetched). Remaining embed refinements are [#73](https://github.com/v3c70r/Muyo/issues/73), none of which block starting.
 
 Status: planning. No code yet.
