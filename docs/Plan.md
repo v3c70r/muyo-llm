@@ -30,7 +30,7 @@ multi-session serving; training; prefill/batching (deferred to v2); quantization
 - **Model:** Qwen2.5-0.5B (GQA: asymmetric KV head count, which exercises the KV cache).
 - **Shaders:** llama.cpp's Vulkan compute shaders (`ggml-vulkan/vulkan-shaders`), reused as
   source and compiled by us. `ggml-vulkan` itself is not linked.
-- **Platform:** Vulkan 1.3+, cooperative matrix enabled (see §5.2).
+- **Platform:** Vulkan 1.3+. Cooperative matrix is targeted where available (§5.3), not required by M1.
 
 ## 3. Why this workload
 
@@ -56,7 +56,7 @@ render frame and can follow.
 | Area | Decision | Rationale |
 | --- | --- | --- |
 | Repository | `muyo-llm`, separate from Muyo | Keeps consumer and library separate; same owner (`v3c70r`). |
-| Consuming Muyo | git submodule + `add_subdirectory`, link `muyo` + `muyo_rg` | `muyo_rg` cannot yet link standalone; the coupling is a finding, not a prerequisite to fix. |
+| Consuming Muyo | git submodule + `add_subdirectory`, link `muyo_rg` | **Measured: this does not work yet.** A two-file probe fails to configure - `CMAKE_SOURCE_DIR` resolves to the consumer's root and 28 paths are built from it, so `add_subdirectory` looks for `thirdparty/glfw` in *our* tree. Filed as Muyo #68; small and separate from the library work (#53), because it only needs Muyo to be embeddable, not `muyo_rg` to stand alone. |
 | Shaders | Vendor llama.cpp `vulkan-shaders` sources + our own `glslc` rules | No `ggml-vulkan` dependency; only sources and contracts. |
 | Shader contract layer | Per-op C++ wrapper replicating defines, spec constants, push-constant struct and bindings | Muyo has no such layer; this is the bulk of the work. |
 | Push constants | Define the struct in muyo-llm; `vkCmdPushConstants` inside the node callback using `ctx.pipelineLayout` | Works today (see §5.1); no upstream change needed. |
@@ -103,10 +103,12 @@ Kept below because it is why the gap mattered: the graph reflected these constan
 
 Upstream: [issue #62](https://github.com/v3c70r/Muyo/issues/62) (closed by [PR #66](https://github.com/v3c70r/Muyo/pull/66)).
 
-### 5.3 Cooperative matrix — upstream enablement required, on M1's critical path
+### 5.3 Cooperative matrix — upstream enablement required; needed from the coopmat GEMM path, not M1
 
 Decision: target Vulkan 1.3+ and use cooperative matrix where available; do not carry a
-separate non-coopmat path. The local device supports it:
+separate non-coopmat path. **It is not an M1 blocker**: M1's accepted op is `add.comp`, elementwise, and
+the coopmat requirement arrives with `mul_mm_cm1` / `mul_mm_cm2` under `COOPMAT` — the generic
+`mul_mm.comp` runs without it. The local device supports it:
 
 ```
 VK_KHR_cooperative_matrix   : extension revision 2
@@ -130,7 +132,7 @@ which upstream later did its own way, on the graph's compute and graphics paths,
 
 The graph path needs the equivalent, targeting `VK_KHR_cooperative_matrix` (the portable
 extension llama.cpp's `COOPMAT` shaders use, rather than the NV one the branch targeted). This is
-on muyo-llm's M1 critical path; Muyo's roadmap planning will place it.
+needed from the coopmat GEMM path; Muyo's roadmap places it in its library track.
 
 ### 5.4 Shader source injection
 
@@ -272,8 +274,8 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
    push-constant layout and bindings read out of `vulkan-shaders-gen.cpp` and
    `ggml-vulkan.cpp`. Not hard, but large and silent: a wrong field yields a wrong number, not
    an error. Mitigation: one op at a time, each verified bit-exact against llama.cpp Vulkan.
-2. **Cooperative matrix enablement.** Muyo does not enable the extension (§5.3). If we commit
-   to coopmat-only, that upstream change is on the critical path for M1.
+2. **Cooperative matrix enablement.** Muyo does not enable the extension (§5.3). Not on M1's path, and if we
+   commit to coopmat-only the upstream change becomes a blocker for the milestone that needs it.
 3. **glslc version.** Locally 2023.8; llama.cpp's newer shaders may need a newer toolchain for
    some variants. Mitigation: pin the variants we use and record the toolchain.
 4. **Scope creep into performance work.** Out of scope; the deliverable is the maturity
@@ -281,7 +283,10 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
 
 ## 11. Open items
 
-- File the cooperative-matrix enablement gap (see §5.3); on this project's M1 critical path.
+- ~~File the cooperative-matrix enablement gap~~ — filed upstream as Muyo #63; needed from the coopmat
+  GEMM path rather than M1.
+- Muyo #68, so this project can be configured at all: the submodule plus `add_subdirectory` integration
+  fails to configure today (measured, §2). This is the first thing M1 needs from upstream.
 - File (or fold into #53) shader-source injection.
 - `docs/Assessment.md` lives in this repository (decided).
 - muyo-llm is registered in Muyo as a first-party architecture-validation consumer; Muyo's
