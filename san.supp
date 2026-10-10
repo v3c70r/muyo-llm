@@ -1,0 +1,20 @@
+# LeakSanitizer suppressions for muyo-llm.
+#
+# Consumed via LSAN_OPTIONS (not ASAN_OPTIONS: the `leak:` syntax is LeakSanitizer's, and
+# AddressSanitizer rejects it) — see scripts/sanity.sh sanitize.
+
+# pthread_once initialization frame (glibc)
+leak:^__pthread_once_slow$
+leak:nptl/pthread_once.c
+
+# AMDVLK driver teardown. It leaks a small fixed amount when the instance and device are
+# destroyed. It is the driver, not this program, and AMDVLK is the only driver on the
+# development machine that exposes VK_KHR_cooperative_matrix (docs/Findings.md), so it is
+# the one that has to run there.
+leak:amdvlk64.so
+
+# The Vulkan loader dlopen()s the ICD from a library constructor and never unloads it, so
+# its allocations outlive main() by design. The stack is `<unknown module>` <- call_init <-
+# _dl_init; matching call_init suppresses it without hiding a leak in this program.
+leak:call_init
+leak:_dl_init

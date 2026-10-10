@@ -1,0 +1,28 @@
+#version 450
+
+// M0 smoke shader: the smallest thing that proves the graph can run a compute node.
+// It writes a deterministic pattern so the result can be checked on the host, which
+// exercises an explicit descriptor binding, a push constant and a storage buffer.
+
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout (set = 0, binding = 0) buffer Data
+{
+    uint values[];
+}
+data;
+
+layout (push_constant) uniform PushConstants
+{
+    uint count;
+}
+pc;
+
+void main()
+{
+    const uint index = gl_GlobalInvocationID.x;
+    if (index < pc.count)
+    {
+        data.values[index] = index * 3u + 1u;
+    }
+}

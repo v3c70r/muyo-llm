@@ -7,3 +7,5 @@ compile_commands.json
 *.DS_Store
 *tags
 cscope.out
+# Vulkan Profiles layer artefacts (vulkaninfo tooling)
+VP_VULKANINFO_*.json
