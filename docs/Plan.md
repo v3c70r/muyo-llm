@@ -30,7 +30,7 @@ multi-session serving; training; prefill/batching (deferred to v2); quantization
 - **Model:** Qwen2.5-0.5B (GQA: asymmetric KV head count, which exercises the KV cache).
 - **Shaders:** llama.cpp's Vulkan compute shaders (`ggml-vulkan/vulkan-shaders`), reused as
   source and compiled by us. `ggml-vulkan` itself is not linked.
-- **Platform:** Vulkan 1.3+, cooperative matrix required (§5.3) — present on this GPU via AMDVLK, absent via RADV.
+- **Platform:** Vulkan 1.3+, cooperative matrix required (§5.3) — enabled on this GPU via AMDVLK; absent via RADV.
 
 ## 3. Why this workload
 
@@ -103,7 +103,7 @@ Kept below because it is why the gap mattered: the graph reflected these constan
 
 Upstream: [issue #62](https://github.com/v3c70r/Muyo/issues/62) (closed by [PR #66](https://github.com/v3c70r/Muyo/pull/66)).
 
-### 5.3 Cooperative matrix — upstream enablement required, and absent from this machine's GPU
+### 5.3 Cooperative matrix — enablement landed; reading the shapes is the open risk
 
 Decision: target Vulkan 1.3+ and use cooperative matrix where available; do not carry a
 separate non-coopmat path. **That decision is what makes this blocking** — with no fallback, enablement is a
@@ -119,8 +119,20 @@ Probing per physical device and per ICD:
 | AMD Radeon Graphics | AMDVLK | **YES, rev 2** | **M=16 N=16 K=16**, 11 property sets |
 | llvmpipe | lavapipe | YES, rev 2 | M=8 N=8 K=8 |
 
-So the shape these kernels need **is** reachable on this machine's GPU - through AMDVLK, which the
-package installs alongside RADV. Two things to know:
+**Enablement landed** in [Muyo #63](https://github.com/v3c70r/Muyo/issues/63): the device layer queries the
+extension and its feature, enables both when the extension is requested, and fails with a named error when a
+requested extension is absent or its feature is false. Nothing is enabled unless asked, so the renderer is
+unaffected.
+
+**What is not resolved is reading the shapes.** Enumerating the property sets dereferences a NULL driver
+dispatch entry under at least one validation-layer version - deterministic SIGSEGV on NVIDIA + VVL 1.4.363,
+in a process that has been building pipelines - and it cannot be probed for, because the crash is the probe.
+So the device layer fetches the sets only on request, and a consumer that asks still inherits the fault:
+[Muyo #72](https://github.com/v3c70r/Muyo/issues/72), which carries the backtrace and the isolation matrix.
+On the affected pairing this project cannot pick a kernel shape; on AMDVLK here it reads 11 sets with
+`F16/F16->F32` at 16x16x16. Worth checking on any new machine before planning around it.
+
+Two things to know about running it here:
 
 - **AMDVLK is opt-in.** Its package ships an implicit `VK_LAYER_AMD_switchable_graphics_64` layer which,
   when active, replaces device enumeration for every application rather than adding a device; the session
@@ -303,7 +315,8 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
 
 ## 11. Open items
 
-- Muyo #63, cooperative-matrix enablement — blocking, since the plan carries no non-coopmat fallback.
+- Muyo #63 landed. The remaining blocker is **#72**: reading the property sets can crash under one
+  driver + validation-layer pairing, which matters here because picking a kernel shape needs them.
 - **Decide whether the coopmat path must also run on RADV** (§5.3). It cannot today: RADV does not expose
   the extension, while AMDVLK on the same GPU does. So the open question is a fallback path, not hardware.
 - Muyo #68, so this project can be configured at all: the submodule plus `add_subdirectory` integration

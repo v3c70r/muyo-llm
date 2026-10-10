@@ -12,8 +12,12 @@ architecture validation first and an inference engine second.
 - **Specialization constants:** supported upstream as of [Muyo PR #66](https://github.com/v3c70r/Muyo/pull/66)
   (issue [#62](https://github.com/v3c70r/Muyo/issues/62), closed). Nodes declare `{id, value}` and the graph
   takes the width from reflection, so this no longer blocks anything.
-- **Upstream blocker:** cooperative-matrix enablement, [Muyo #63](https://github.com/v3c70r/Muyo/issues/63) —
-  the plan carries no non-coopmat fallback, so this blocks the implementation rather than one milestone.
+- **Enablement landed:** [Muyo #63](https://github.com/v3c70r/Muyo/issues/63) — the device layer queries
+  cooperative matrix and enables it when the extension is requested, so this no longer blocks.
+- **What blocks instead, on some platforms:** *reading* the property sets. Enumerating them dereferences a
+  NULL driver dispatch entry under one validation-layer version, so a consumer picking a kernel shape can
+  crash there — [Muyo #72](https://github.com/v3c70r/Muyo/issues/72). Reported on NVIDIA + VVL 1.4.363;
+  AMDVLK here reads 11 sets with `F16/F16->F32` at 16x16x16. Check before running on a new machine.
 - **It is available on this machine, but not through the default driver.** RADV (RDNA2, `deviceID 0x1681`)
   does **not** expose `VK_KHR_cooperative_matrix`; the installed **AMDVLK** does — rev 2 with
   `F16/F16->F32 M=16 N=16 K=16` among its eleven property sets, which is the shape llama.cpp's `COOPMAT`
