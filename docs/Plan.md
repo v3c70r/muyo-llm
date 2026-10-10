@@ -30,7 +30,7 @@ multi-session serving; training; prefill/batching (deferred to v2); quantization
 - **Model:** Qwen2.5-0.5B (GQA: asymmetric KV head count, which exercises the KV cache).
 - **Shaders:** llama.cpp's Vulkan compute shaders (`ggml-vulkan/vulkan-shaders`), reused as
   source and compiled by us. `ggml-vulkan` itself is not linked.
-- **Platform:** Vulkan 1.3+. Cooperative matrix is targeted where available (§5.3), not required by M1.
+- **Platform:** Vulkan 1.3+, cooperative matrix required (§5.3) — and absent from the development GPU.
 
 ## 3. Why this workload
 
@@ -103,19 +103,39 @@ Kept below because it is why the gap mattered: the graph reflected these constan
 
 Upstream: [issue #62](https://github.com/v3c70r/Muyo/issues/62) (closed by [PR #66](https://github.com/v3c70r/Muyo/pull/66)).
 
-### 5.3 Cooperative matrix — upstream enablement required; needed from the coopmat GEMM path, not M1
+### 5.3 Cooperative matrix — upstream enablement required, and absent from this machine's GPU
 
 Decision: target Vulkan 1.3+ and use cooperative matrix where available; do not carry a
-separate non-coopmat path. **It is not an M1 blocker**: M1's accepted op is `add.comp`, elementwise, and
-the coopmat requirement arrives with `mul_mm_cm1` / `mul_mm_cm2` under `COOPMAT` — the generic
-`mul_mm.comp` runs without it. The local device supports it:
+separate non-coopmat path. **That decision is what makes this blocking** — with no fallback, enablement is a
+prerequisite for the implementation rather than for one milestone.
+
+**And the local device does not support it.** The extension list was previously read from an unqualified
+`vulkaninfo | grep cooperative_matrix`, which does not say which GPU a line belongs to; probing per physical
+device gives the opposite of what that suggested:
 
 ```
-VK_KHR_cooperative_matrix   : extension revision 2
-VK_NV_cooperative_matrix2   : extension revision 1
+== AMD Radeon Graphics (RADV REMBRANDT)   KHR_cooperative_matrix=no   rev=0
+== llvmpipe (LLVM 21.1.8, 256 bits)       KHR_cooperative_matrix=YES  rev=2
+     feature: cooperativeMatrix=1 robustBufferAccess=1
+     F16/F16->F32: M=8 N=8 K=8 scope=3 saturating=0   (4 property sets)
 ```
 
-But Muyo never queries or enables it (`grep -rni cooperative_matrix src/ docs/ CMakeLists.txt`
+So the extension is present only on the **software** device. The real GPU is RDNA2 (`deviceID 0x1681`), and
+`RADV_PERFTEST=coopmat`, `RADV_PERFTEST=coopmat1` and `RADV_DEBUG=coopmat` do not change that.
+
+**This is a decision to take, not a detail.** Three options, and they differ in what gets validated:
+
+- **a second machine** with a GPU that exposes it (RDNA3+ or an Ada-class NVIDIA part) — the only option where
+  the coopmat path is exercised for real, and therefore the only one that can measure anything;
+- **a fallback path** through the generic `mul_mm.comp` — contradicts the decision above, but would make the
+  project runnable here;
+- **llvmpipe** — enough to prove correctness of the wiring, and *not* enough to mean anything about
+  performance, since it is a CPU rasteriser.
+
+Recorded here rather than left implicit because the cost of discovering it at the first GEMM dispatch is a
+debugging session against a device that was never going to run the kernel.
+
+But Muyo never queries or enables it at all (`grep -rni cooperative_matrix src/ docs/ CMakeLists.txt`
 → no matches) and its device creation only enables `synchronization2` and `timelineSemaphore`
 (`VkRenderDevice.cpp:227-315`). A consumer that needs cooperative matrix cannot ask for it.
 
@@ -274,8 +294,9 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
    push-constant layout and bindings read out of `vulkan-shaders-gen.cpp` and
    `ggml-vulkan.cpp`. Not hard, but large and silent: a wrong field yields a wrong number, not
    an error. Mitigation: one op at a time, each verified bit-exact against llama.cpp Vulkan.
-2. **Cooperative matrix enablement.** Muyo does not enable the extension (§5.3). Not on M1's path, and if we
-   commit to coopmat-only the upstream change becomes a blocker for the milestone that needs it.
+2. **Cooperative matrix enablement, and the hardware.** Muyo does not enable the extension (§5.3), and the
+   development machine's GPU does not expose it — only llvmpipe does. So this risk is two-layered: the
+   upstream change, and where the coopmat path actually gets exercised once it exists.
 3. **glslc version.** Locally 2023.8; llama.cpp's newer shaders may need a newer toolchain for
    some variants. Mitigation: pin the variants we use and record the toolchain.
 4. **Scope creep into performance work.** Out of scope; the deliverable is the maturity
@@ -283,10 +304,11 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
 
 ## 11. Open items
 
-- ~~File the cooperative-matrix enablement gap~~ — filed upstream as Muyo #63; needed from the coopmat
-  GEMM path rather than M1.
+- Muyo #63, cooperative-matrix enablement — blocking, since the plan carries no non-coopmat fallback.
+- **Decide where the coopmat path runs** (§5.3): a second machine, a fallback path, or llvmpipe for
+  correctness only. The development GPU cannot run it.
 - Muyo #68, so this project can be configured at all: the submodule plus `add_subdirectory` integration
-  fails to configure today (measured, §2). This is the first thing M1 needs from upstream.
+  fails to configure today (measured, §2).
 - File (or fold into #53) shader-source injection.
 - `docs/Assessment.md` lives in this repository (decided).
 - muyo-llm is registered in Muyo as a first-party architecture-validation consumer; Muyo's
