@@ -60,7 +60,7 @@ render frame and can follow.
 | Shaders | Vendor llama.cpp `vulkan-shaders` sources + our own `glslc` rules | No `ggml-vulkan` dependency; only sources and contracts. |
 | Shader contract layer | Per-op C++ wrapper replicating defines, spec constants, push-constant struct and bindings | Muyo has no such layer; this is the bulk of the work. |
 | Push constants | Define the struct in muyo-llm; `vkCmdPushConstants` inside the node callback using `ctx.pipelineLayout` | Works today (see §5.1); no upstream change needed. |
-| Spec constants | Upstream support required; tracked as Muyo #62 | Blocking (§5.2). |
+| Spec constants | Supported upstream since Muyo PR #66 | Resolved; see §5.2. |
 | Graph mapping | One compute node per op; explicit `AddDependency` chains | Matches the current API (no implicit edges). |
 | Weights / KV | Imported / `Persistent` buffers, reused across executions | Directly tests the long-lived-resource constraint. |
 | Correctness oracle | Primary: llama.cpp **Vulkan** backend, bit-exact. Secondary: ggml **CPU**, tolerance. | See §7. |
@@ -85,18 +85,23 @@ Ergonomic gaps only, candidates for the `#55` (fail at Build) workstream:
 - `ResourceUsage::PUSH_CONSTANTS` is a dead enum — `ResourceUseResolver.h:157` throws on it.
 - No build-time check that a pushed range matches reflection.
 
-### 5.2 Specialization constants — blocking, filed as Muyo #62
+### 5.2 Specialization constants — resolved upstream in Muyo PR #66
 
-The graph reflects `specializationConstants` (`ShaderReflection.h:72-82`,
-`ShaderReflectionFetcher.cpp:145-162`) but never passes `VkSpecializationInfo` when creating a
-pipeline (`RenderGraphBuilder.cpp:225-237`). llama.cpp shaders require it:
+**Landed.** Muyo PR #66 applies `VkSpecializationInfo` at pipeline creation on both the compute and
+graphics paths, after fixing the reflection half (which had modelled the value as a `uint32_t` and
+expected a `format` field SPIRV-Reflect does not have — a 64-bit constant's default is 8 bytes). Nodes
+now declare `{constant_id, value}` and the graph takes the width from reflection, so a caller cannot
+disagree with the shader about the size of its own constant; unknown ids fail at `Build()` naming the node.
+
+Kept below because it is why the gap mattered: the graph reflected these constants and never passed
+`VkSpecializationInfo` when creating a pipeline, and llama.cpp shaders require it.
 
 - `mul_mm.comp` emits **74 `OpSpecConstant`s** in the `DATA_A_F32` x `B_TYPE=mat2x4` variant
   (verified locally with `glslc` 2023.8 + `spirv-dis | grep -c OpSpecConstant`);
 - `mul_mat_vec.comp` uses `layout(local_size_x_id = 0, ...)`, so the workgroup size itself is a
   specialization constant.
 
-Upstream issue: <https://github.com/v3c70r/Muyo/issues/62>.
+Upstream: [issue #62](https://github.com/v3c70r/Muyo/issues/62) (closed by [PR #66](https://github.com/v3c70r/Muyo/pull/66)).
 
 ### 5.3 Cooperative matrix — upstream enablement required, on M1's critical path
 
@@ -121,7 +126,7 @@ extensions and puts `VkPhysicalDeviceCooperativeMatrixFeaturesNV` on the device 
 - `src/RenderDevice/RenderPassGEMM.{h,cpp}` and `shaders/shmem.comp` run a cooperative-matrix
 GEMM and query `VkCooperativeMatrixPropertiesNV`;
 - `ComputePipelineBuilder::AddShaderModule` gains a `const VkSpecializationInfo*` parameter —
-the same wiring #62 asks for on the graph path.
+which upstream later did its own way, on the graph's compute and graphics paths, in Muyo PR #66.
 
 The graph path needs the equivalent, targeting `VK_KHR_cooperative_matrix` (the portable
 extension llama.cpp's `COOPMAT` shaders use, rather than the NV one the branch targeted). This is
@@ -162,7 +167,7 @@ batch of findings).
 ### M1 — llama.cpp shader pipeline and the first real op
 
 - Vendor the shader sources; build `add.comp` (elementwise) to SPIR-V with an explicit define set.
-- Wire specialization constants into Muyo (implements #62) on a `rg-*` branch and PR it.
+- ~~Wire specialization constants into Muyo~~ — done upstream in Muyo PR #66; nothing to carry here.
 - Push-constant wrapper for one op.
 
 **Acceptance:** `C = A + B` matches a CPU reference elementwise; reverting the spec-constant
