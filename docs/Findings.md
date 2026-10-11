@@ -161,3 +161,33 @@ Upstream: this is the "feature policy moves to the host" half of the device boun
 to let `CreateDevice` accept the Vulkan 1.1 feature set (or the whole promoted-feature chain) from
 the caller rather than constructing `features11` itself. Recorded here rather than filed because
 #53/#58 already own the boundary; it is concrete evidence for both.
+
+## F9 — the KV-cache append has no expression in the graph
+
+**A, confirmed; workaround in place.** A decoder writes the current token's K and V into a view of
+the cache at a dynamic position (row `position`). With the shaders vendored so far, neither half of
+that is directly expressible:
+
+- `copy.comp` (`cpy`) computes its destination index from the destination tensor's shape and
+  strides, plus a **sub-buffer offset** for the row (ggml passes `vk_tensor_offset(t) + t->view_offs`
+  as the descriptor offset). The graph binds whole buffers — a `ResourceUse` names a resource, not a
+  byte range — so `cache[position]` has nowhere to put the position. The shader's own
+  `misalign_offsets` field is 8 bits per operand (up to 255 bytes) and is for alignment, not a row
+  index.
+- The GEMV can write a **row** offset: setting `base_work_group_y = position` and
+  `batch_stride_d = rowStride` makes `d_offset = position * rowStride`, and `stride_d` still bounds
+  the rows (found while writing the single layer). That covers a row-major K cache, and a row-major
+  V cache.
+- But the `V^T . p` product needs V **transposed** to be a plain `mul_mat_vec`, and a transposing
+  append is a scatter — no shader writes one element per column at stride `sequence`. `mul_mat_vec_nc`
+  does not help: its column stride is 1.
+
+So the single layer (`src/TransformerLayer.cpp`) reads a **host-provided transposed V cache** and
+omits the K/V projections; the append is M3b. The two ways out: give the graph a per-resource offset
+or view (which is also what an imported slice of a shared buffer needs, Muyo-side), or add a
+transposing append op. Recorded because "where does the KV cache row go" is the first thing a
+decode engine needs and the library has no answer for it.
+
+Related: Muyo's `docs/Consumers.md` lists "long-lived imported resources survive across executions"
+as a hold. This is the next level of the same concern — not surviving, but being *written in place*
+at a chosen offset.

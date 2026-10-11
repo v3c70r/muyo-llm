@@ -27,6 +27,7 @@
 #include "Rope.h"
 #include "SoftMax.h"
 #include "Swiglu.h"
+#include "TransformerLayer.h"
 #include "VkRenderDevice.h"
 #include "vk_mem_alloc.h"
 
@@ -177,11 +178,13 @@ int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
     if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
-        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax" && mode != "--attention")
+        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax" &&
+        mode != "--attention" && mode != "--layer")
     {
         std::fprintf(
             stderr,
-            "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax|--softmax|--attention]\n",
+            "usage: %s "
+            "[--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax|--softmax|--attention|--layer]\n",
             argv[0]);
         return 2;
     }
@@ -226,6 +229,10 @@ int main(int argc, char** argv)
         if (mode == "--attention")
         {
             return muyo_llm::RunAttention();
+        }
+        if (mode == "--layer")
+        {
+            return muyo_llm::RunTransformerLayer();
         }
         return RunSmoke();
     }
