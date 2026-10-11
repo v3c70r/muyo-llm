@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "DescriptorManager.h"
+#include "ElementwiseAdd.h"
 #include "HeadlessContext.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -73,8 +74,6 @@ void PrintDevice()
 /// @return 0 when the GPU-produced pattern matches the host-side expectation, 1 otherwise.
 int RunSmoke()
 {
-    const muyo_llm::HeadlessContext context;
-
     PrintDevice();
 
     RenderGraphBuilder builder(GetRenderDevice());
@@ -169,15 +168,18 @@ int RunSmoke()
 int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
-    if (mode != "--smoke")
+    if (mode != "--smoke" && mode != "--add")
     {
-        std::fprintf(stderr, "usage: %s [--smoke]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--smoke|--add]\n", argv[0]);
         return 2;
     }
 
     try
     {
-        return RunSmoke();
+        // One context for the process: the Muyo subsystems are singletons, and every mode relies
+        // on them already being initialised.
+        const muyo_llm::HeadlessContext context;
+        return mode == "--add" ? muyo_llm::RunElementwiseAdd() : RunSmoke();
     }
     catch (const std::exception& exception)
     {

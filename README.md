@@ -25,6 +25,16 @@ $ cd build && ./muyo_llm --smoke
 [smoke] OK: 1024 elements written by the compute node and verified on the host
 ```
 
+**M1 in progress.** llama.cpp's `add.comp` runs through the graph as `C = A + B` and is checked
+against a CPU reference; `mul_mm.comp` compiles with its 74 specialization constants. Correct
+matmul dispatch is M2 work.
+
+```
+$ cd build && ./muyo_llm --add
+[graph] execution order: LlamaAdd
+[add] OK: llama.cpp add_f32 over 1000 elements matches the CPU reference
+```
+
 ## Build
 
 Muyo is embedded as a submodule; a development checkout can be substituted with
