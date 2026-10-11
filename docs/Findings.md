@@ -108,3 +108,32 @@ bug in the consumer, and because AMDVLK is the only driver here that exposes coo
 `docs/Findings.md`'s F-row for the driver cannot be avoided by switching drivers. `san.supp` carries
 the module- and constructor-scoped suppressions, and the rationale, rather than a blanket
 `detect_leaks=0`.
+
+## F8 — a consumer cannot enable a Vulkan 1.1 feature, so F16 weights cannot run
+
+**C, confirmed; blocks the F16 path, not filed — it belongs to #53/#58.** Enabling an F16
+storage buffer needs `storageBuffer16BitAccess`. That feature is Vulkan 1.1, so it lives in
+`VkPhysicalDeviceVulkan11Features` — which `VkRenderDevice::CreateDevice` builds and chains
+itself (`VkRenderDevice.cpp`, the `features11` block: `multiview`, `shaderDrawParameters`). A
+consumer therefore cannot supply it either way: appending a `VkPhysicalDevice16BitStorageFeatures`
+is rejected because the promoted feature is already present, and appending a second
+`VkPhysicalDeviceVulkan11Features` is a duplicate structure. Validation, on the first F16 GEMV:
+
+```
+vkCreateDevice(): pNext chain includes a VkPhysicalDeviceVulkan11Features structure, then it
+must not include a VkPhysicalDevice16BitStorageFeatures structure ... (VUID-VkDeviceCreateInfo-pNext-02829)
+```
+
+Impact: **every llama.cpp matmul kernel that reads F16 weights fails to create its shader module**
+(`vkCreateShaderModule(): SPIR-V contains a 16-bit OpVariable with StorageBuffer StorageClass, but
+storageBuffer16BitAccess was not enabled`). That is the whole F16 inference path — the precision the
+plan chose. The renderer never hits it because its own shaders do not use 16-bit storage.
+
+Workaround in place: the GEMV runs with F32 weights (`mul_mat_vec_f32_f32_f32`), which needs no
+optional feature. The F16 variant is vendored and compiles; it is one device feature away.
+
+Upstream: this is the "feature policy moves to the host" half of the device boundary
+(`RenderGraph-Library-Design.md`, "What the device layer must shed"; #53, #58). The minimal fix is
+to let `CreateDevice` accept the Vulkan 1.1 feature set (or the whole promoted-feature chain) from
+the caller rather than constructing `features11` itself. Recorded here rather than filed because
+#53/#58 already own the boundary; it is concrete evidence for both.

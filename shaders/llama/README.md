@@ -27,3 +27,7 @@ side of that contract lives in `src/LlamaContracts.h` and the per-shader compile
 | `dot_product_funcs.glsl` | `mul_mm.comp`'s inner-product helpers. |
 | `mul_mm_funcs.glsl` | `mul_mm.comp`'s tile load/store helpers. |
 | `mul_mm_id_funcs.glsl` | Included unconditionally by `mul_mm.comp` (guarded uses are inside). |
+| `mul_mat_vec.comp` | GEMV; the decode workhorse (M1). |
+| `mul_mat_vec_base.glsl` | Its push-constant block, reductions and offsets. |
+| `mul_mat_vec_iface.glsl` | Its bindings and operand types. |
+| `dequant_funcs.glsl` | Included by GEMV; the non-quant F32/F16 paths live here too. |

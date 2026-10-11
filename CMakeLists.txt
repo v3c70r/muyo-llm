@@ -103,6 +103,51 @@ add_custom_command(
     VERBATIM)
 list(APPEND MUYO_LLM_SPIRV_FILES ${LLAMA_ADD_F32_SPV})
 
+# mul_mat_vec_f16_f32_f32: the decode GEMV - F16 weights, F32 activation, F32 output. Defines from
+# vulkan-shaders-gen.cpp's mul_mat_vec loop (non-subgroup: USE_SUBGROUP_ADD is not defined, so the
+# reduction is the shared-memory tree and BLOCK_SIZE need not match the subgroup size).
+set(LLAMA_MV_F16_F32_DEFINES
+    DATA_A_F16 B_TYPE=float B_TYPEV2=vec2 B_TYPEV4=vec4 D_TYPE=float FLOAT_TYPE=float FLOAT_TYPEV2=vec2)
+set(LLAMA_MV_F16_F32_FLAGS "")
+foreach (DEF ${LLAMA_MV_F16_F32_DEFINES})
+    list(APPEND LLAMA_MV_F16_F32_FLAGS "-D${DEF}")
+endforeach()
+
+set(LLAMA_MV_F16_F32_SPV "${MUYO_LLM_SHADER_OUTPUT_DIR}/mul_mat_vec_f16_f32_f32.comp.spv")
+add_custom_command(
+    OUTPUT ${LLAMA_MV_F16_F32_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${MUYO_LLM_SHADER_OUTPUT_DIR}"
+    COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -fshader-stage=compute ${LLAMA_MV_F16_F32_FLAGS}
+            "${LLAMA_SHADER_DIR}/mul_mat_vec.comp" -o ${LLAMA_MV_F16_F32_SPV}
+    DEPENDS "${LLAMA_SHADER_DIR}/mul_mat_vec.comp" "${LLAMA_SHADER_DIR}/mul_mat_vec_base.glsl"
+            "${LLAMA_SHADER_DIR}/mul_mat_vec_iface.glsl" "${LLAMA_SHADER_DIR}/dequant_funcs.glsl"
+            "${LLAMA_SHADER_DIR}/types.glsl"
+    COMMENT "Compiling mul_mat_vec_f16_f32_f32.comp (llama.cpp)"
+    VERBATIM)
+list(APPEND MUYO_LLM_SPIRV_FILES ${LLAMA_MV_F16_F32_SPV})
+
+# mul_mat_vec_f32_f32_f32: the same GEMV with F32 weights. Used until F16 storage buffers can be
+# enabled (docs/Findings.md F8); needs no optional device feature.
+set(LLAMA_MV_F32_F32_DEFINES
+    DATA_A_F32 B_TYPE=float B_TYPEV2=vec2 B_TYPEV4=vec4 D_TYPE=float FLOAT_TYPE=float FLOAT_TYPEV2=vec2)
+set(LLAMA_MV_F32_F32_FLAGS "")
+foreach (DEF ${LLAMA_MV_F32_F32_DEFINES})
+    list(APPEND LLAMA_MV_F32_F32_FLAGS "-D${DEF}")
+endforeach()
+
+set(LLAMA_MV_F32_F32_SPV "${MUYO_LLM_SHADER_OUTPUT_DIR}/mul_mat_vec_f32_f32_f32.comp.spv")
+add_custom_command(
+    OUTPUT ${LLAMA_MV_F32_F32_SPV}
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${MUYO_LLM_SHADER_OUTPUT_DIR}"
+    COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -fshader-stage=compute ${LLAMA_MV_F32_F32_FLAGS}
+            "${LLAMA_SHADER_DIR}/mul_mat_vec.comp" -o ${LLAMA_MV_F32_F32_SPV}
+    DEPENDS "${LLAMA_SHADER_DIR}/mul_mat_vec.comp" "${LLAMA_SHADER_DIR}/mul_mat_vec_base.glsl"
+            "${LLAMA_SHADER_DIR}/mul_mat_vec_iface.glsl" "${LLAMA_SHADER_DIR}/dequant_funcs.glsl"
+            "${LLAMA_SHADER_DIR}/types.glsl"
+    COMMENT "Compiling mul_mat_vec_f32_f32_f32.comp (llama.cpp)"
+    VERBATIM)
+list(APPEND MUYO_LLM_SPIRV_FILES ${LLAMA_MV_F32_F32_SPV})
+
 # mul_mm_f32_f16: the F32-A x F16-B GEMM variant. This define set is provisional - it is the one
 # that gets the shader to compile and emit the 74 specialization constants the plan cites, but the
 # variant selection and the tile spec-constant values are contract work that belongs with the

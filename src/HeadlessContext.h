@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vector>
+
 #include "DescriptorManager.h"
 #include "RenderResourceManager.h"
 #include "SamplerManager.h"
@@ -27,6 +29,14 @@ public:
     HeadlessContext()
     {
         Muyo::GetRenderDevice()->Initialize({}, {});
+
+        // No extra device features are passed. F16 weights live in storage buffers, whose shaders
+        // need `storageBuffer16BitAccess` - but `CreateDevice` builds its own
+        // `VkPhysicalDeviceVulkan11Features` and chains it, so a consumer cannot add that promoted
+        // feature (neither a second Vulkan11Features nor a `VkPhysicalDevice16BitStorageFeatures`
+        // may coexist with it). f16-weight shaders are therefore blocked until Muyo lets the host
+        // supply the Vulkan 1.1 feature set; recorded as docs/Findings.md F8. The F32-weight
+        // variants used until then need nothing beyond the defaults.
         Muyo::GetRenderDevice()->CreateDevice({}, {}, nullptr, {});
         Muyo::GetRenderDevice()->CreateCommandPools();
         Muyo::GetMemoryAllocator()->Initalize(Muyo::GetRenderDevice());

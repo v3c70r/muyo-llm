@@ -56,4 +56,53 @@ namespace llama_add_spec_constants
 {
 constexpr uint32_t NOREPEAT = 0;  ///< True when A and B have the same shape, so B needs no modulo.
 }  // namespace llama_add_spec_constants
+
+/// `mul_mat_vec.comp`'s `push_constant` block, from `mul_mat_vec_base.glsl`.
+///
+/// A GEMV: `d[row] = sum_k A[row, k] * B[k]`, one workgroup per output row group. `strideA`,
+/// `strideB` and `strideD` are in elements - like `add.comp`'s `nb`, ggml passes tensor strides,
+/// and the shader indexes typed arrays. `strideD` doubles as the row count the shader bounds
+/// against. The batch fields are zero for the single-vector decode case.
+struct LlamaMatVecPushConstants
+{
+    uint32_t ncols;  ///< K, the reduction dimension.
+    uint32_t strideA;
+    uint32_t strideB;
+    uint32_t strideD;  ///< Also the output row count.
+
+    uint32_t batchStrideA;
+    uint32_t batchStrideB;
+    uint32_t batchStrideD;
+
+    uint32_t fusionFlags;  ///< Bias/scale fusion bits; 0 disables all of them.
+
+    uint32_t baseWorkGroupY;
+    uint32_t ne02;
+    uint32_t ne12;
+    uint32_t broadcast2;
+    uint32_t broadcast3;
+};
+
+/// 13 four-byte fields, matching `vk_mat_vec_push_constants` in ggml-vulkan-push-constants.h.
+static_assert(sizeof(LlamaMatVecPushConstants) == 13 * sizeof(uint32_t),
+              "LlamaMatVecPushConstants no longer matches mul_mat_vec_base.glsl's `parameter` block");
+
+/// Descriptor bindings of `mul_mat_vec.comp` / `mul_mat_vec_iface.glsl`. `FUSE0`/`FUSE1` are
+/// declared unconditionally and only read when the matching `fusionFlags` bit is set.
+namespace llama_mat_vec_bindings
+{
+constexpr uint32_t A = 0;
+constexpr uint32_t B = 1;
+constexpr uint32_t D = 2;
+constexpr uint32_t FUSE0 = 3;
+constexpr uint32_t FUSE1 = 4;
+}  // namespace llama_mat_vec_bindings
+
+/// `constant_id` values `mul_mat_vec.comp` declares.
+namespace llama_mat_vec_spec_constants
+{
+constexpr uint32_t BLOCK_SIZE = 0;  ///< Also `local_size_x_id`: the workgroup size.
+constexpr uint32_t NUM_ROWS = 1;    ///< Rows one workgroup produces; the dispatch divides by it.
+constexpr uint32_t NUM_COLS = 2;    ///< Column-groups per workgroup; 1 for the plain path.
+}  // namespace llama_mat_vec_spec_constants
 }  // namespace muyo_llm

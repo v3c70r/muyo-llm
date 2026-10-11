@@ -13,6 +13,7 @@
 #include "DescriptorManager.h"
 #include "ElementwiseAdd.h"
 #include "HeadlessContext.h"
+#include "MatVec.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
 #include "RenderGraph/RenderGraphNodeResource.h"
@@ -168,9 +169,9 @@ int RunSmoke()
 int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
-    if (mode != "--smoke" && mode != "--add")
+    if (mode != "--smoke" && mode != "--add" && mode != "--matvec")
     {
-        std::fprintf(stderr, "usage: %s [--smoke|--add]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--smoke|--add|--matvec]\n", argv[0]);
         return 2;
     }
 
@@ -179,7 +180,15 @@ int main(int argc, char** argv)
         // One context for the process: the Muyo subsystems are singletons, and every mode relies
         // on them already being initialised.
         const muyo_llm::HeadlessContext context;
-        return mode == "--add" ? muyo_llm::RunElementwiseAdd() : RunSmoke();
+        if (mode == "--add")
+        {
+            return muyo_llm::RunElementwiseAdd();
+        }
+        if (mode == "--matvec")
+        {
+            return muyo_llm::RunMatVec();
+        }
+        return RunSmoke();
     }
     catch (const std::exception& exception)
     {
