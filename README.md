@@ -31,11 +31,13 @@ reference: `add.comp` (`C = A + B`), `mul_mat_vec.comp` (decode GEMV, F16 weight
 sampling). `mul_mm.comp` compiles with its 74 specialization constants; correct GEMM dispatch is M2
 work, as is `flash_attn.comp`.
 
-**M2 in progress.** A GGUF reader parses the header, metadata and tensor table, and reads F32/F16
-tensor data; `--gguf <path>` prints a summary, `--embed <gguf> <token>` loads a model's token
-embedding and gathers one row through the graph, verified against the file. The tokenizer is next.
-The local 6.2 GB model is `qwen35` with Q4_K/Q6_K tensors, so it is not loadable until quantization
-is supported; the tests use a 1.2 MB F32 model:
+**M2 complete.** A GGUF reader parses the header, metadata and tensor table and reads F32/F16 tensor
+data; a GPT-2/Qwen2 byte-level BPE tokenizer reads the vocab and merges; `--embed <gguf> <token>`
+loads a model's token embedding and gathers one row through the graph, verified against the file.
+`--tokenize <gguf> <text>` round-trips and checks the known Qwen2 ids (`"Hello world!"` ->
+`9707 1879 0`). The tokenizer's pre-tokenizer covers ASCII only.
+
+The F16 target model is downloaded for M4 (the attention cache append, M3b, waits on Muyo #81):
 
 ```
 curl -sL https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf \

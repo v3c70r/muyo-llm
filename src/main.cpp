@@ -29,6 +29,7 @@
 #include "Rope.h"
 #include "SoftMax.h"
 #include "Swiglu.h"
+#include "Tokenize.h"
 #include "TransformerLayer.h"
 #include "VkRenderDevice.h"
 #include "vk_mem_alloc.h"
@@ -188,6 +189,24 @@ int main(int argc, char** argv)
             return 2;
         }
         return muyo_llm::PrintGgufSummary(argv[2]);
+    }
+    // --tokenize uses the GGUF tokenizer; it also needs no device.
+    if (mode == "--tokenize")
+    {
+        if (argc < 4)
+        {
+            std::fprintf(stderr, "usage: %s --tokenize <gguf> <text>\n", argv[0]);
+            return 2;
+        }
+        try
+        {
+            return muyo_llm::RunTokenize(argv[2], argv[3]);
+        }
+        catch (const std::exception& exception)
+        {
+            std::fprintf(stderr, "[fail] %s\n", exception.what());
+            return 1;
+        }
     }
     // --embed loads a model's embedding from a GGUF file; it needs the device for the graph.
     if (mode == "--embed")
