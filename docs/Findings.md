@@ -24,7 +24,11 @@ These are as important as the gaps, because they are the guarantees `docs/Consum
 
 ## F1 — an embedder must link `SPIRV-Reflect` by hand
 
-**A, confirmed.** `muyo` compiles `src/ShaderReflectionFetcher.cpp`, which calls `spvReflect*`, but
+**A, resolved** — fixed by Muyo `6f8d65b`, which declares `SPIRV-Reflect` a `PUBLIC` dependency of
+`muyo`. The consumer's hand-written link line is removed and the build links without it. The finding
+is kept for the record. Original text:
+
+`muyo` compiles `src/ShaderReflectionFetcher.cpp`, which calls `spvReflect*`, but
 neither `muyo` nor `muyo_rg` declares a dependency on the `SPIRV-Reflect` target; only the in-tree
 `tests` target links it (`Muyo/CMakeLists.txt:391`). A consumer that links `muyo_rg` — which needs
 shader reflection at `Build()` — fails to link:
@@ -111,7 +115,12 @@ the module- and constructor-scoped suppressions, and the rationale, rather than 
 
 ## F8 — a consumer cannot enable a Vulkan 1.1 feature, so F16 weights cannot run
 
-**C, confirmed; blocks the F16 path, not filed — it belongs to #53/#58.** Enabling an F16
+**C, resolved** — fixed by Muyo `643ce26` (#78), which sets `storageBuffer16BitAccess` and
+`uniformAndStorageBuffer16BitAccess` on `features11` and verifies both. The GEMV now runs the F16
+variant and matches the CPU reference; the F32 workaround is gone. Kept for the record. Original
+text:
+
+Enabling an F16
 storage buffer needs `storageBuffer16BitAccess`. That feature is Vulkan 1.1, so it lives in
 `VkPhysicalDeviceVulkan11Features` — which `VkRenderDevice::CreateDevice` builds and chains
 itself (`VkRenderDevice.cpp`, the `features11` block: `multiview`, `shaderDrawParameters`). A

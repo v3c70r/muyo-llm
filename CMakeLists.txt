@@ -41,13 +41,10 @@ add_link_options("$<${SANITIZE_CONDITION}:-fsanitize=address,undefined>")
 
 add_executable(muyo_llm ${MUYO_LLM_SOURCES})
 target_include_directories(muyo_llm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-# muyo_rg links muyo PUBLIC (#68). Both are named because the executable uses both: the
-# graph, and the device/allocation singletons the graph reaches for until #53 injects them.
-target_link_libraries(muyo_llm PRIVATE muyo_rg muyo SPIRV-Reflect ${Vulkan_LIBRARIES})
-# SPIRV-Reflect is an undeclared dependency of muyo: ShaderReflectionFetcher.cpp lives in
-# muyo and calls spvReflect*, but only the in-tree `tests` target links the library, so an
-# embedder gets undefined references at link. Named here to build; filed as a finding. The
-# target is directory-scoped in Muyo's CMake but its name is global, so this resolves.
+# muyo_rg links muyo PUBLIC (#68). SPIRV-Reflect is no longer named: Muyo declares it as a PUBLIC
+# dependency of muyo now (its commit 6f8d65b, the fix for muyo-llm finding F1), so an embedder
+# inherits it and linking it here would be a workaround for a bug that no longer exists.
+target_link_libraries(muyo_llm PRIVATE muyo_rg muyo ${Vulkan_LIBRARIES})
 target_compile_options(muyo_llm PRIVATE -Wall)
 
 # ── Shaders ──────────────────────────────────────────────────────────────────

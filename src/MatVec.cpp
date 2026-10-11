@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <glm/gtc/packing.hpp>
+#include <glm/vec2.hpp>
 #include <string>
 #include <vector>
 
@@ -40,14 +42,18 @@ constexpr uint32_t K_ROWS = 128;
 constexpr uint32_t K_COLS = 256;
 constexpr uint32_t K_BLOCK_SIZE = 32;
 
+/// Pack a float into its f16 bit pattern. The inputs are small integers, which f16 represents
+/// exactly, so the weight buffer carries the values the CPU reference uses, bit for bit.
+uint16_t ToHalf(float value) { return static_cast<uint16_t>(glm::packHalf2x16(glm::vec2(value, 0.0F)) & 0xFFFFu); }
+
 /// The same sum `mul_mat_vec.comp` computes. The inputs are small integers, whose products summed
 /// over 256 columns are exact in f32 - so the comparison has no tolerance to hide a wrong index in.
-float HostMatVec(const std::vector<float>& a, const std::vector<float>& b, uint32_t row)
+float HostMatVec(const std::vector<uint16_t>& a, const std::vector<float>& b, uint32_t row)
 {
     float sum = 0.0F;
     for (uint32_t column = 0; column < K_COLS; ++column)
     {
-        sum += a[row * K_COLS + column] * b[column];
+        sum += glm::unpackHalf2x16(a[row * K_COLS + column]).x * b[column];
     }
     return sum;
 }
@@ -55,16 +61,16 @@ float HostMatVec(const std::vector<float>& a, const std::vector<float>& b, uint3
 
 int RunMatVec()
 {
-    // F32 weights, not F16: an F16 storage buffer needs `storageBuffer16BitAccess`, which a consumer
-    // cannot enable through Muyo's CreateDevice yet (docs/Findings.md F8). The F16 variant is
-    // vendored and compiles; this proves the GEMV contract on the variant that can run today.
-    std::vector<float> hostA(K_ROWS * K_COLS);
+    // F16 weights, F32 activations: llama.cpp's `mul_mat_vec_f16_f32_f32`. The F16 storage buffer
+    // needs `storageBuffer16BitAccess`, which a consumer could not enable until Muyo #78 landed
+    // (docs/Findings.md F8); that is why this variant is only reachable now.
+    std::vector<uint16_t> hostA(K_ROWS * K_COLS);
     std::vector<float> hostB(K_COLS);
     for (uint32_t row = 0; row < K_ROWS; ++row)
     {
         for (uint32_t column = 0; column < K_COLS; ++column)
         {
-            hostA[row * K_COLS + column] = static_cast<float>(static_cast<int>(column % 7) - 3);
+            hostA[row * K_COLS + column] = ToHalf(static_cast<float>(static_cast<int>(column % 7) - 3));
         }
     }
     for (uint32_t column = 0; column < K_COLS; ++column)
@@ -83,7 +89,8 @@ int RunMatVec()
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
                                   .lifetime = ResourceLifetime::Transient};
     };
-    builder.AddResource("WeightsA", buffer(K_ROWS * K_COLS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+    builder.AddResource("WeightsA",
+                        buffer(K_ROWS * K_COLS, sizeof(uint16_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("InputB", buffer(K_COLS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("OutputD", buffer(K_ROWS, sizeof(float), storage));
     // `mul_mat_vec.comp` declares bindings 3 and 4 unconditionally; they are read only under the
@@ -118,7 +125,7 @@ int RunMatVec()
                 readUse("Fuse0", llama_mat_vec_bindings::FUSE0),
                 readUse("Fuse1", llama_mat_vec_bindings::FUSE1),
             },
-        .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
+        .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
         .specializationConstants =
             {
                 {.id = llama_mat_vec_spec_constants::BLOCK_SIZE, .value = K_BLOCK_SIZE},
@@ -181,7 +188,7 @@ int RunMatVec()
         std::fprintf(stderr, "[fail] the graph did not allocate the matvec buffers\n");
         return 1;
     }
-    pA->SetData(hostA.data(), hostA.size() * sizeof(float));
+    pA->SetData(hostA.data(), hostA.size() * sizeof(uint16_t));
     pB->SetData(hostB.data(), hostB.size() * sizeof(float));
 
     builder.Execute();
@@ -208,7 +215,8 @@ int RunMatVec()
         return 1;
     }
 
-    std::printf("[matvec] OK: llama.cpp mul_mat_vec over %ux%u matches the CPU reference\n", K_ROWS, K_COLS);
+    std::printf("[matvec] OK: llama.cpp mul_mat_vec (F16 weights) over %ux%u matches the CPU reference\n", K_ROWS,
+                K_COLS);
     return 0;
 }
 }  // namespace muyo_llm

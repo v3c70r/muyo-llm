@@ -26,10 +26,8 @@ $ cd build && ./muyo_llm --smoke
 ```
 
 **M1 in progress.** llama.cpp's `add.comp` runs through the graph as `C = A + B` and is checked
-against a CPU reference; so does `mul_mat_vec.comp` (the decode GEMV) as `d = A·b`. `mul_mm.comp`
-compiles with its 74 specialization constants; correct GEMM dispatch is M2 work. F16 storage
-buffers are blocked on a device-feature gap (Muyo #53/#58, `docs/Findings.md` F8), so the GEMV runs
-with F32 weights for now.
+against a CPU reference; so does `mul_mat_vec.comp` (the decode GEMV, F16 weights) as `d = A·b`.
+`mul_mm.comp` compiles with its 74 specialization constants; correct GEMM dispatch is M2 work.
 
 ```
 $ cd build && ./muyo_llm --add
@@ -37,7 +35,7 @@ $ cd build && ./muyo_llm --add
 [add] OK: llama.cpp add_f32 over 1000 elements matches the CPU reference
 $ cd build && ./muyo_llm --matvec
 [graph] execution order: LlamaMatVec
-[matvec] OK: llama.cpp mul_mat_vec over 128x256 matches the CPU reference
+[matvec] OK: llama.cpp mul_mat_vec (F16 weights) over 128x256 matches the CPU reference
 ```
 
 ## Build
