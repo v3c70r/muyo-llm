@@ -161,4 +161,79 @@ namespace llama_rope_modes
 constexpr uint32_t NORMAL = 0;
 constexpr uint32_t NEOX = 2;  ///< Half-split rotation; what Qwen and most modern models use.
 }  // namespace llama_rope_modes
+
+/// `glu_head.glsl`'s `push_constant` block (shared by `swiglu.comp`, `geglu.comp`, ...).
+/// 27 four-byte words.
+///
+/// The `ne2_*mp` / `ne2_*L` pairs are magic numbers for the shader's `fastdiv`, which the host
+/// computes with ggml's `init_fastdiv_values`. Reproducing them is not optional: `fastdiv` with
+/// zeroed magic returns the input unchanged, so every element would land on row 0's address.
+struct LlamaGluPushConstants
+{
+    uint32_t N;
+    uint32_t ne00;
+    uint32_t ne20;
+    uint32_t mode;
+    float alpha;
+    float limit;
+    uint32_t nb00, nb01, nb02, nb03;
+    uint32_t nb10, nb11, nb12, nb13;
+    uint32_t nb20, nb21, nb22, nb23;
+    uint32_t ne21;
+    uint32_t ne22;
+    uint32_t misalignOffsets;
+    uint32_t ne2_012mp, ne2_012L;
+    uint32_t ne2_01mp, ne2_01L;
+    uint32_t ne2_0mp, ne2_0L;
+};
+
+/// 27 four-byte words, matching `vk_op_glu_push_constants` in ggml-vulkan-push-constants.h.
+static_assert(sizeof(LlamaGluPushConstants) == 27 * sizeof(uint32_t),
+              "LlamaGluPushConstants no longer matches glu_head.glsl's `parameter` struct");
+
+/// Descriptor bindings of `glu_head.glsl`.
+namespace llama_glu_bindings
+{
+constexpr uint32_t A = 0;
+constexpr uint32_t B = 1;  ///< The second operand; only read in split mode.
+constexpr uint32_t D = 2;
+}  // namespace llama_glu_bindings
+
+/// `glu_main.glsl`'s `p.mode` values: 0 default (one input split in half), 1 swapped, 2 split
+/// (two separate inputs). A transformer's gate/up pair is split.
+namespace llama_glu_modes
+{
+constexpr uint32_t DEFAULT_HALVES = 0;
+constexpr uint32_t SWAPPED_HALVES = 1;
+constexpr uint32_t SPLIT = 2;
+}  // namespace llama_glu_modes
+
+/// `generic_head.glsl`'s `push_constant` block, shared by the simple elementwise/reduction shaders
+/// (`argmax.comp` among them). 6 four-byte words.
+struct LlamaGenericHeadPushConstants
+{
+    uint32_t KX;  ///< Row length.
+    uint32_t KY;  ///< Row count.
+    float param1;
+    float param2;
+    float param3;
+    float param4;
+};
+
+/// 6 four-byte words, matching `vk_op_push_constants` in ggml-vulkan-push-constants.h.
+static_assert(sizeof(LlamaGenericHeadPushConstants) == 6 * sizeof(uint32_t),
+              "LlamaGenericHeadPushConstants no longer matches generic_head.glsl's `parameter` block");
+
+/// Descriptor bindings of `argmax.comp`.
+namespace llama_argmax_bindings
+{
+constexpr uint32_t A = 0;  ///< Input row (`float`).
+constexpr uint32_t D = 1;  ///< Output index (`int`).
+}  // namespace llama_argmax_bindings
+
+/// `constant_id` values `argmax.comp` declares.
+namespace llama_argmax_spec_constants
+{
+constexpr uint32_t BLOCK_SIZE = 0;  ///< Also `local_size_x_id`: the reduction width.
+}  // namespace llama_argmax_spec_constants
 }  // namespace muyo_llm

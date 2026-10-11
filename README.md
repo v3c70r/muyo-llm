@@ -27,8 +27,9 @@ $ cd build && ./muyo_llm --smoke
 
 **M1 in progress.** llama.cpp's shaders run through the graph, each checked against a CPU
 reference: `add.comp` (`C = A + B`), `mul_mat_vec.comp` (decode GEMV, F16 weights), `rms_norm.comp`,
-and `rope_neox.comp`. `mul_mm.comp` compiles with its 74 specialization constants; correct GEMM
-dispatch is M2 work.
+`rope_neox.comp`, `swiglu.comp`, `get_rows.comp` (embedding lookup) and `argmax.comp` (greedy
+sampling). `mul_mm.comp` compiles with its 74 specialization constants; correct GEMM dispatch is M2
+work, as is `flash_attn.comp`.
 
 ```
 $ cd build && ./muyo_llm --add

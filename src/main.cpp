@@ -10,8 +10,10 @@
 #include <string>
 #include <vector>
 
+#include "Argmax.h"
 #include "DescriptorManager.h"
 #include "ElementwiseAdd.h"
+#include "GetRows.h"
 #include "HeadlessContext.h"
 #include "MatVec.h"
 #include "RenderGraph/RenderGraphBuilder.h"
@@ -22,6 +24,7 @@
 #include "RenderResourceManager.h"
 #include "RmsNorm.h"
 #include "Rope.h"
+#include "Swiglu.h"
 #include "VkRenderDevice.h"
 #include "vk_mem_alloc.h"
 
@@ -171,9 +174,11 @@ int RunSmoke()
 int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
-    if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope")
+    if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
+        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax")
     {
-        std::fprintf(stderr, "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax]\n",
+                     argv[0]);
         return 2;
     }
 
@@ -197,6 +202,18 @@ int main(int argc, char** argv)
         if (mode == "--rope")
         {
             return muyo_llm::RunRope();
+        }
+        if (mode == "--swiglu")
+        {
+            return muyo_llm::RunSwiglu();
+        }
+        if (mode == "--getrows")
+        {
+            return muyo_llm::RunGetRows();
+        }
+        if (mode == "--argmax")
+        {
+            return muyo_llm::RunArgmax();
         }
         return RunSmoke();
     }

@@ -31,7 +31,7 @@ JOBS="$(nproc 2>/dev/null || echo 4)"
 MUYO_SOURCE_DIR="${MUYO_SOURCE_DIR:-$ROOT/thirdparty/Muyo}"
 # Every op the engine can currently run, checked in both build configurations. One line to
 # extend when an op lands; the alternative is a list that drifts from main.cpp.
-MODES="--smoke --add --matvec --rmsnorm --rope"
+MODES="--smoke --add --matvec --rmsnorm --rope --swiglu --getrows --argmax"
 
 SRC_GLOBS=('src/*.cpp' 'src/*.h' 'src/**/*.cpp' 'src/**/*.h')
 

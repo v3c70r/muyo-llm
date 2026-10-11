@@ -120,6 +120,24 @@ muyo_llm_llama_shader(rope_neox_f32 rope_neox.comp
     "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/rope_head.glsl"
     "${LLAMA_SHADER_DIR}/rope_params.glsl" "${LLAMA_SHADER_DIR}/rope_funcs.glsl")
 
+# swiglu_f32: the gated MLP activation, `silu(a) * b`. The split mode (two operands) is what a
+# transformer's gate/up pair uses.
+muyo_llm_llama_shader(swiglu_f32 swiglu.comp
+    "A_TYPE=float;D_TYPE=float"
+    "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/glu_head.glsl"
+    "${LLAMA_SHADER_DIR}/glu_main.glsl" "${LLAMA_SHADER_DIR}/utils.glsl")
+
+# get_rows_f32: the embedding lookup (and any row gather). Weight rows F32, indices int.
+muyo_llm_llama_shader(get_rows_f32 get_rows.comp
+    "DATA_A_F32;B_TYPE=int;D_TYPE=float;TEMP_TYPE=FLOAT_TYPE;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"
+    "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_binary_head.glsl"
+    "${LLAMA_SHADER_DIR}/utils.glsl")
+
+# argmax_f32: greedy sampling - the index of the largest logit.
+muyo_llm_llama_shader(argmax_f32 argmax.comp
+    "A_TYPE=float;D_TYPE=int;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"
+    "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_head.glsl")
+
 # mul_mat_vec_f16_f32_f32: the decode GEMV - F16 weights, F32 activation, F32 output. The
 # non-subgroup path (USE_SUBGROUP_ADD undefined), so the reduction is the shared-memory
 # tree and BLOCK_SIZE need not match the subgroup size.
