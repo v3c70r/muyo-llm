@@ -15,6 +15,7 @@
 #include "DescriptorManager.h"
 #include "ElementwiseAdd.h"
 #include "GetRows.h"
+#include "GgufSummary.h"
 #include "HeadlessContext.h"
 #include "MatVec.h"
 #include "RenderGraph/RenderGraphBuilder.h"
@@ -177,6 +178,16 @@ int RunSmoke()
 int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
+    // --gguf reads a file and prints a summary; it needs no device, so it runs before the context.
+    if (mode == "--gguf")
+    {
+        if (argc < 3)
+        {
+            std::fprintf(stderr, "usage: %s --gguf <path>\n", argv[0]);
+            return 2;
+        }
+        return muyo_llm::PrintGgufSummary(argv[2]);
+    }
     if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
         mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax" &&
         mode != "--attention" && mode != "--layer")
