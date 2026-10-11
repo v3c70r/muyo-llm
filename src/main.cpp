@@ -20,6 +20,8 @@
 #include "RenderGraph/RenderGraphResourceDesc.h"
 #include "RenderResource.h"
 #include "RenderResourceManager.h"
+#include "RmsNorm.h"
+#include "Rope.h"
 #include "VkRenderDevice.h"
 #include "vk_mem_alloc.h"
 
@@ -169,9 +171,9 @@ int RunSmoke()
 int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
-    if (mode != "--smoke" && mode != "--add" && mode != "--matvec")
+    if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope")
     {
-        std::fprintf(stderr, "usage: %s [--smoke|--add|--matvec]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope]\n", argv[0]);
         return 2;
     }
 
@@ -187,6 +189,14 @@ int main(int argc, char** argv)
         if (mode == "--matvec")
         {
             return muyo_llm::RunMatVec();
+        }
+        if (mode == "--rmsnorm")
+        {
+            return muyo_llm::RunRmsNorm();
+        }
+        if (mode == "--rope")
+        {
+            return muyo_llm::RunRope();
         }
         return RunSmoke();
     }

@@ -25,17 +25,20 @@ $ cd build && ./muyo_llm --smoke
 [smoke] OK: 1024 elements written by the compute node and verified on the host
 ```
 
-**M1 in progress.** llama.cpp's `add.comp` runs through the graph as `C = A + B` and is checked
-against a CPU reference; so does `mul_mat_vec.comp` (the decode GEMV, F16 weights) as `d = A·b`.
-`mul_mm.comp` compiles with its 74 specialization constants; correct GEMM dispatch is M2 work.
+**M1 in progress.** llama.cpp's shaders run through the graph, each checked against a CPU
+reference: `add.comp` (`C = A + B`), `mul_mat_vec.comp` (decode GEMV, F16 weights), `rms_norm.comp`,
+and `rope_neox.comp`. `mul_mm.comp` compiles with its 74 specialization constants; correct GEMM
+dispatch is M2 work.
 
 ```
 $ cd build && ./muyo_llm --add
-[graph] execution order: LlamaAdd
 [add] OK: llama.cpp add_f32 over 1000 elements matches the CPU reference
-$ cd build && ./muyo_llm --matvec
-[graph] execution order: LlamaMatVec
+$ ./muyo_llm --matvec
 [matvec] OK: llama.cpp mul_mat_vec (F16 weights) over 128x256 matches the CPU reference
+$ ./muyo_llm --rmsnorm
+[rmsnorm] OK: llama.cpp rms_norm over 8x512 matches the CPU reference
+$ ./muyo_llm --rope
+[rope] OK: llama.cpp rope_neox over 8 channels matches the CPU reference
 ```
 
 ## Build

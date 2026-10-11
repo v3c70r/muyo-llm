@@ -29,6 +29,9 @@ fi
 BASE="${BASE:-origin/main}"
 JOBS="$(nproc 2>/dev/null || echo 4)"
 MUYO_SOURCE_DIR="${MUYO_SOURCE_DIR:-$ROOT/thirdparty/Muyo}"
+# Every op the engine can currently run, checked in both build configurations. One line to
+# extend when an op lands; the alternative is a list that drifts from main.cpp.
+MODES="--smoke --add --matvec --rmsnorm --rope"
 
 SRC_GLOBS=('src/*.cpp' 'src/*.h' 'src/**/*.cpp' 'src/**/*.h')
 
@@ -65,7 +68,7 @@ cmd_build() {
     bold "build: Debug + smoke"
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DMUYO_SOURCE_DIR="$MUYO_SOURCE_DIR" >/dev/null || { bad "configure FAILED"; fail=1; return; }
     cmake --build build --target muyo_llm -j"$JOBS" >/dev/null || { bad "build FAILED"; fail=1; return; }
-    ( cd build && ./muyo_llm --smoke && ./muyo_llm --add && ./muyo_llm --matvec ) || { bad "modes FAILED"; fail=1; return; }
+    ( cd build && for mode in $MODES; do ./muyo_llm "$mode" || exit 1; done ) || { bad "modes FAILED"; fail=1; return; }
     ok "build OK"
 }
 
@@ -76,7 +79,7 @@ cmd_sanitize() {
     local san_env="LSAN_OPTIONS=suppressions=$ROOT/san.supp:print_suppressions=1 UBSAN_OPTIONS=print_stacktrace=1"
     (
         cd build-san
-        for mode in --smoke --add --matvec; do
+        for mode in $MODES; do
             env $san_env ./muyo_llm "$mode" || exit 1
         done
     ) || { bad "modes FAILED under sanitizers"; fail=1; return; }

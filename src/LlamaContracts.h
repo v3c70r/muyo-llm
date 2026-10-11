@@ -105,4 +105,60 @@ constexpr uint32_t BLOCK_SIZE = 0;  ///< Also `local_size_x_id`: the workgroup s
 constexpr uint32_t NUM_ROWS = 1;    ///< Rows one workgroup produces; the dispatch divides by it.
 constexpr uint32_t NUM_COLS = 2;    ///< Column-groups per workgroup; 1 for the plain path.
 }  // namespace llama_mat_vec_spec_constants
+
+/// `rope_neox.comp`'s `push_constant` block, from `rope_params.glsl`. 30 four-byte words.
+///
+/// RoPE rotates each head's channels in place. The fields a caller must get right are `nDims`
+/// (the channels rotated, not the whole head), `thetaScale` (`freqBase^(-2/nDims)`), and the
+/// strides, which are in elements like every other ggml stride.
+struct LlamaRopePushConstants
+{
+    uint32_t ropeMode;
+    uint32_t nrows;
+    uint32_t nDims;
+    uint32_t nOffs;
+    float freqScale;
+    float freqBase;
+    float extFactor;
+    float attnFactor;
+    float corrDims[2];
+    float thetaScale;
+    uint32_t hasFf;
+    int32_t sections[4];
+    uint32_t isImrope;
+    uint32_t isBack;
+    uint32_t setRowsStride;
+    uint32_t ne00;
+    uint32_t ne01;
+    uint32_t ne02;
+    uint32_t nb01;
+    uint32_t nb02;
+    uint32_t nb03;
+    uint32_t nb11;
+    uint32_t nb12;
+    uint32_t nb13;
+    uint32_t aOffset;
+    uint32_t dOffset;
+};
+
+/// 30 four-byte words, matching `vk_op_rope_push_constants` in ggml-vulkan-push-constants.h.
+static_assert(sizeof(LlamaRopePushConstants) == 30 * sizeof(uint32_t),
+              "LlamaRopePushConstants no longer matches rope_params.glsl's `rope_params` struct");
+
+/// Descriptor bindings of `rope_head.glsl`.
+namespace llama_rope_bindings
+{
+constexpr uint32_t X = 0;  ///< Input rows.
+constexpr uint32_t Y = 1;  ///< Positions, `int` per row.
+constexpr uint32_t Z = 2;  ///< Frequency factors, read only when `hasFf` is set.
+constexpr uint32_t D = 3;  ///< Output rows.
+constexpr uint32_t I = 4;  ///< `uvec2` set-rows indices, read only for the fused path.
+}  // namespace llama_rope_bindings
+
+/// `rope_params.rope_mode` values, from `ggml.h`'s `GGML_ROPE_TYPE_*`.
+namespace llama_rope_modes
+{
+constexpr uint32_t NORMAL = 0;
+constexpr uint32_t NEOX = 2;  ///< Half-split rotation; what Qwen and most modern models use.
+}  // namespace llama_rope_modes
 }  // namespace muyo_llm
