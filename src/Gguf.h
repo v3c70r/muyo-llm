@@ -70,6 +70,19 @@ public:
     /// @return The data-section offset, i.e. where tensor 0's bytes start (after alignment).
     uint64_t DataOffset() const { return m_dataOffset; }
 
+    /// @return The tensor table entry for `name`, or nullptr when absent.
+    const GgufTensorInfo* FindTensor(const std::string& name) const;
+    /// Read a tensor's raw bytes from the data section.
+    ///
+    /// Only the element-integer types the engine can upload today are accepted (F32, F16); a
+    /// quantized tensor throws rather than returning bytes whose layout the caller would have to
+    /// interpret. The row order is GGUF's: fastest-varying dimension first, so a
+    /// `[embd, vocab]` tensor is stored one token vector after another and uploads as-is.
+    /// @param name Tensor name.
+    /// @return The tensor's bytes.
+    /// @throws std::runtime_error when the tensor is absent or its type is unsupported.
+    std::vector<uint8_t> ReadTensorData(const std::string& name) const;
+
     /// @return A metadata value as a string, or `fallback` when absent or not a string.
     std::string StringOr(const std::string& key, const std::string& fallback) const;
     /// @return The length of a string-array metadata value, or 0 when absent or not one.
@@ -80,6 +93,7 @@ public:
 
 private:
     uint32_t m_version = 0;
+    std::string m_path;
     std::vector<std::pair<std::string, GgufValue>> m_metadata;
     std::vector<GgufTensorInfo> m_tensors;
     uint64_t m_dataOffset = 0;

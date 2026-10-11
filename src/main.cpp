@@ -14,6 +14,7 @@
 #include "Attention.h"
 #include "DescriptorManager.h"
 #include "ElementwiseAdd.h"
+#include "Embedding.h"
 #include "GetRows.h"
 #include "GgufSummary.h"
 #include "HeadlessContext.h"
@@ -187,6 +188,25 @@ int main(int argc, char** argv)
             return 2;
         }
         return muyo_llm::PrintGgufSummary(argv[2]);
+    }
+    // --embed loads a model's embedding from a GGUF file; it needs the device for the graph.
+    if (mode == "--embed")
+    {
+        if (argc < 4)
+        {
+            std::fprintf(stderr, "usage: %s --embed <gguf> <token>\n", argv[0]);
+            return 2;
+        }
+        try
+        {
+            const muyo_llm::HeadlessContext context;
+            return muyo_llm::RunEmbedding(argv[2], std::stoi(argv[3]));
+        }
+        catch (const std::exception& exception)
+        {
+            std::fprintf(stderr, "[fail] %s\n", exception.what());
+            return 1;
+        }
     }
     if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
         mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax" &&

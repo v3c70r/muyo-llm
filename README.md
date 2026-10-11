@@ -31,6 +31,22 @@ reference: `add.comp` (`C = A + B`), `mul_mat_vec.comp` (decode GEMV, F16 weight
 sampling). `mul_mm.comp` compiles with its 74 specialization constants; correct GEMM dispatch is M2
 work, as is `flash_attn.comp`.
 
+**M2 in progress.** A GGUF reader parses the header, metadata and tensor table, and reads F32/F16
+tensor data; `--gguf <path>` prints a summary, `--embed <gguf> <token>` loads a model's token
+embedding and gathers one row through the graph, verified against the file. The tokenizer is next.
+The local 6.2 GB model is `qwen35` with Q4_K/Q6_K tensors, so it is not loadable until quantization
+is supported; the tests use a 1.2 MB F32 model:
+
+```
+curl -sL https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf \
+    -o testdata/stories260K.gguf
+$ ./muyo_llm --gguf testdata/stories260K.gguf
+[gguf] general.architecture = llama
+[gguf] tensor token_embd.weight  type=0 dims=64x512
+$ ./muyo_llm --embed testdata/stories260K.gguf 42
+[embed] OK: token 42's 64-value embedding loaded from testdata/stories260K.gguf matches the file
+```
+
 ```
 $ cd build && ./muyo_llm --add
 [add] OK: llama.cpp add_f32 over 1000 elements matches the CPU reference

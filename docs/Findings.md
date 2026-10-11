@@ -191,3 +191,15 @@ decode engine needs and the library has no answer for it.
 Related: Muyo's `docs/Consumers.md` lists "long-lived imported resources survive across executions"
 as a hold. This is the next level of the same concern — not surviving, but being *written in place*
 at a chosen offset.
+
+## F10 — a graph with no nodes builds and runs silently
+
+**P, confirmed.** `RenderGraphBuilder::Build()` on a builder that never had `AddNode` called succeeds,
+and `Execute()` completes and does nothing. A consumer that forgot its node — which this session did
+while writing the embedding path — sees an all-zero result and no error; the only signal is an empty
+`GetExecutionOrder()`. Related to #55 ("fail at Build, and name the graph entity"): a render graph
+with nothing to render is almost certainly a mistake, and "no nodes" is a declaration state the
+graph can check for free. Either reject it at `Build()` or warn once.
+
+The cost here was a debugging round: zeros read as a sync or binding problem (the first fix was a
+missing host barrier, which was also wrong to guess at) before the empty execution order was printed.

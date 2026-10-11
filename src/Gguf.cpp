@@ -160,6 +160,7 @@ uint64_t AlignUp(uint64_t value, uint64_t alignment) { return (value + alignment
 
 GgufReader::GgufReader(const std::string& path)
 {
+    m_path = path;
     std::ifstream stream(path, std::ios::binary);
     if (!stream)
     {
@@ -285,5 +286,58 @@ const std::string& GgufReader::StringArrayAt(const std::string& key, size_t inde
         throw std::out_of_range("GGUF: key '" + key + "' is not a string array");
     }
     return strings->at(index);
+}
+
+const GgufTensorInfo* GgufReader::FindTensor(const std::string& name) const
+{
+    const auto it = std::find_if(m_tensors.begin(), m_tensors.end(),
+                                 [&name](const GgufTensorInfo& tensor) { return tensor.name == name; });
+    return it == m_tensors.end() ? nullptr : &*it;
+}
+
+std::vector<uint8_t> GgufReader::ReadTensorData(const std::string& name) const
+{
+    const GgufTensorInfo* info = FindTensor(name);
+    if (info == nullptr)
+    {
+        throw std::runtime_error("GGUF: no tensor '" + name + "'");
+    }
+
+    // Only the element-integer types the engine can upload today. A quantized tensor's layout is a
+    // separate concern, so it throws here rather than handing back bytes to misinterpret.
+    uint64_t elementSize = 0;
+    switch (info->type)
+    {
+        case 0:  // GGML_TYPE_F32
+            elementSize = 4;
+            break;
+        case 1:  // GGML_TYPE_F16
+            elementSize = 2;
+            break;
+        default:
+            throw std::runtime_error("GGUF: tensor '" + name + "' has type " + std::to_string(info->type) +
+                                     ", which is not F32 or F16");
+    }
+
+    uint64_t elementCount = 1;
+    for (uint64_t dimension : info->dimensions)
+    {
+        elementCount *= dimension;
+    }
+    const uint64_t byteCount = elementCount * elementSize;
+
+    std::ifstream stream(m_path, std::ios::binary);
+    if (!stream)
+    {
+        throw std::runtime_error("GGUF: cannot reopen " + m_path);
+    }
+    stream.seekg(static_cast<std::streamoff>(m_dataOffset + info->offset));
+    std::vector<uint8_t> bytes(static_cast<size_t>(byteCount));
+    stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(byteCount));
+    if (!stream)
+    {
+        throw std::runtime_error("GGUF: truncated data for tensor '" + name + "'");
+    }
+    return bytes;
 }
 }  // namespace muyo_llm

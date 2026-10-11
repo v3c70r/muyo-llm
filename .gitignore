@@ -9,3 +9,4 @@ compile_commands.json
 cscope.out
 # Vulkan Profiles layer artefacts (vulkaninfo tooling)
 VP_VULKANINFO_*.json
+testdata/*.gguf
