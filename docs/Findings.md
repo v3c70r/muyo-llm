@@ -132,6 +132,21 @@ plan chose. The renderer never hits it because its own shaders do not use 16-bit
 Workaround in place: the GEMV runs with F32 weights (`mul_mat_vec_f32_f32_f32`), which needs no
 optional feature. The F16 variant is vendored and compiles; it is one device feature away.
 
+**This is an enablement gap, not a support gap.** `storageBuffer16BitAccess` was promoted to core in
+Vulkan 1.1, but a core *optional feature* is still off by default - it has to be set to `VK_TRUE` in
+`VkDeviceCreateInfo`'s chain. Querying (`vkGetPhysicalDeviceFeatures2`) only answers whether it is
+supported. The device does support it:
+
+```
+VkPhysicalDeviceVulkan11Features:
+    storageBuffer16BitAccess           = true
+    uniformAndStorageBuffer16BitAccess = true
+```
+
+So nothing about the API version blocks it; `CreateDevice`'s own `features11` struct does.
+Filed upstream as Muyo #78 (the narrow unblock), and linked from #53/#58 as evidence for the
+general shape: feature policy belongs to the host.
+
 Upstream: this is the "feature policy moves to the host" half of the device boundary
 (`RenderGraph-Library-Design.md`, "What the device layer must shed"; #53, #58). The minimal fix is
 to let `CreateDevice` accept the Vulkan 1.1 feature set (or the whole promoted-feature chain) from
