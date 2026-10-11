@@ -133,6 +133,12 @@ muyo_llm_llama_shader(get_rows_f32 get_rows.comp
     "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_binary_head.glsl"
     "${LLAMA_SHADER_DIR}/utils.glsl")
 
+# get_rows_f16_f32: the same gather with F16 weights and an F32 output - the real models' layout.
+muyo_llm_llama_shader(get_rows_f16_f32 get_rows.comp
+    "DATA_A_F16;B_TYPE=int;D_TYPE=float;TEMP_TYPE=FLOAT_TYPE;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"
+    "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_binary_head.glsl"
+    "${LLAMA_SHADER_DIR}/utils.glsl")
+
 # argmax_f32: greedy sampling - the index of the largest logit.
 muyo_llm_llama_shader(argmax_f32 argmax.comp
     "A_TYPE=float;D_TYPE=int;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"

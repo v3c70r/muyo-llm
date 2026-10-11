@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <glm/gtc/packing.hpp>
+#include <glm/vec2.hpp>
 #include <string>
 #include <vector>
 
@@ -44,11 +46,15 @@ int RunEmbedding(const std::string& path, int32_t token)
         std::fprintf(stderr, "[fail] %s has no token_embd.weight\n", path.c_str());
         return 1;
     }
-    if (tensor->type != 0)  // F32; F16 is the plan's target but this test model is F32.
+    // F32 (the tiny test model) or F16 (the real one). Both widen to F32 in the shader, so the
+    // host reference is exact.
+    const bool isF16 = tensor->type == 1;
+    if (tensor->type != 0 && !isF16)
     {
-        std::fprintf(stderr, "[fail] token_embd.weight is type %u, expected F32\n", tensor->type);
+        std::fprintf(stderr, "[fail] token_embd.weight is type %u, expected F32 or F16\n", tensor->type);
         return 1;
     }
+    const uint32_t elementSize = isF16 ? 2 : 4;
 
     // GGUF order: fastest-varying dimension first, so dims = [embd, vocab] and the raw bytes are
     // already one token vector after another.
@@ -60,9 +66,23 @@ int RunEmbedding(const std::string& path, int32_t token)
         return 1;
     }
     const std::vector<uint8_t> bytes = reader.ReadTensorData("token_embd.weight");
-    const auto* hostEmbedding = reinterpret_cast<const float*>(bytes.data());
-    const std::vector<float> expected(hostEmbedding + static_cast<size_t>(token) * embeddingDim,
-                                      hostEmbedding + static_cast<size_t>(token + 1) * embeddingDim);
+    std::vector<float> expected(embeddingDim);
+    if (isF16)
+    {
+        const auto* halves = reinterpret_cast<const uint16_t*>(bytes.data());
+        for (uint32_t d = 0; d < embeddingDim; ++d)
+        {
+            expected[d] = glm::unpackHalf2x16(halves[static_cast<size_t>(token) * embeddingDim + d]).x;
+        }
+    }
+    else
+    {
+        const auto* floats = reinterpret_cast<const float*>(bytes.data());
+        for (uint32_t d = 0; d < embeddingDim; ++d)
+        {
+            expected[d] = floats[static_cast<size_t>(token) * embeddingDim + d];
+        }
+    }
 
     RenderGraphBuilder builder(GetRenderDevice());
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -98,7 +118,7 @@ int RunEmbedding(const std::string& path, int32_t token)
         .resourceUses = {use("TokenEmbedding", ResourceIOType::READ, llama_add_bindings::A),
                          use("TokenIndex", ResourceIOType::READ, llama_add_bindings::B),
                          use("TokenVector", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
-        .shaderNames = {"get_rows_f32.comp"},
+        .shaderNames = {isF16 ? "get_rows_f16_f32.comp" : "get_rows_f32.comp"},
         .execute = [embeddingDim, vocabSize](RenderGraphNodeContext& ctx)
         {
             LlamaAddPushConstants pushConstants{};
