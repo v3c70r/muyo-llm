@@ -24,6 +24,7 @@
 #include "RenderResourceManager.h"
 #include "RmsNorm.h"
 #include "Rope.h"
+#include "SoftMax.h"
 #include "Swiglu.h"
 #include "VkRenderDevice.h"
 #include "vk_mem_alloc.h"
@@ -175,9 +176,10 @@ int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
     if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
-        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax")
+        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax")
     {
-        std::fprintf(stderr, "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax]\n",
+        std::fprintf(stderr,
+                     "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax|--softmax]\n",
                      argv[0]);
         return 2;
     }
@@ -214,6 +216,10 @@ int main(int argc, char** argv)
         if (mode == "--argmax")
         {
             return muyo_llm::RunArgmax();
+        }
+        if (mode == "--softmax")
+        {
+            return muyo_llm::RunSoftMax();
         }
         return RunSmoke();
     }

@@ -138,6 +138,11 @@ muyo_llm_llama_shader(argmax_f32 argmax.comp
     "A_TYPE=float;D_TYPE=int;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"
     "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_head.glsl")
 
+# soft_max_f32: the attention-weights normalization, without an ALiBi mask (KY = 0).
+muyo_llm_llama_shader(soft_max_f32 soft_max.comp
+    "A_TYPE=float;B_TYPE=float;D_TYPE=float;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"
+    "${LLAMA_SHADER_DIR}/types.glsl")
+
 # mul_mat_vec_f16_f32_f32: the decode GEMV - F16 weights, F32 activation, F32 output. The
 # non-subgroup path (USE_SUBGROUP_ADD undefined), so the reduction is the shared-memory
 # tree and BLOCK_SIZE need not match the subgroup size.

@@ -236,4 +236,49 @@ namespace llama_argmax_spec_constants
 {
 constexpr uint32_t BLOCK_SIZE = 0;  ///< Also `local_size_x_id`: the reduction width.
 }  // namespace llama_argmax_spec_constants
+
+/// `soft_max.comp`'s `push_constant` block. 17 four-byte words.
+///
+/// `KY = 0` disables the additive mask, which is the case for plain softmax over a row. `scale` is
+/// applied inside (`v = a * scale`), so a scorer divides by `sqrt(headDim)` here rather than before.
+struct LlamaSoftMaxPushConstants
+{
+    uint32_t KX;  ///< Row length (number of keys).
+    uint32_t KY;  ///< 0 when there is no mask operand.
+    uint32_t ne00;
+    uint32_t ne01;
+    uint32_t ne02;
+    uint32_t ne12;
+    uint32_t ne13;
+    uint32_t nb11;
+    uint32_t nb12;
+    uint32_t nb13;
+    float scale;
+    float maxBias;
+    float m0;
+    float m1;
+    uint32_t nHeadLog2;
+    uint32_t nrowsX;
+    uint32_t hasSinks;
+};
+
+/// 17 four-byte words, matching `vk_op_soft_max_push_constants` in ggml-vulkan-push-constants.h.
+static_assert(sizeof(LlamaSoftMaxPushConstants) == 17 * sizeof(uint32_t),
+              "LlamaSoftMaxPushConstants no longer matches soft_max.comp's `parameter` block");
+
+/// Descriptor bindings of `soft_max.comp`. Y and Z are declared unconditionally; Y is the additive
+/// mask (read when `KY > 0`) and Z the attention sinks (read when `hasSinks != 0`).
+namespace llama_soft_max_bindings
+{
+constexpr uint32_t X = 0;  ///< Input scores.
+constexpr uint32_t Y = 1;  ///< Additive mask.
+constexpr uint32_t Z = 2;  ///< Attention sinks.
+constexpr uint32_t D = 3;  ///< Normalized output (read-write: the tail columns are scaled in place).
+}  // namespace llama_soft_max_bindings
+
+/// `constant_id` values `soft_max.comp` declares.
+namespace llama_soft_max_spec_constants
+{
+constexpr uint32_t BLOCK_SIZE = 0;  ///< Also `local_size_x_id`: the reduction width.
+}  // namespace llama_soft_max_spec_constants
 }  // namespace muyo_llm
