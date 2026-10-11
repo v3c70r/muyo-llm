@@ -249,6 +249,36 @@ std::string GgufReader::StringOr(const std::string& key, const std::string& fall
     return fallback;
 }
 
+uint64_t GgufReader::UintOr(const std::string& key, uint64_t fallback) const
+{
+    const auto it =
+        std::find_if(m_metadata.begin(), m_metadata.end(), [&key](const auto& entry) { return entry.first == key; });
+    if (it == m_metadata.end())
+    {
+        return fallback;
+    }
+    if (const auto* scalar = std::get_if<GgufScalar>(&it->second))
+    {
+        return std::visit([](auto value) { return static_cast<uint64_t>(value); }, *scalar);
+    }
+    return fallback;
+}
+
+double GgufReader::FloatOr(const std::string& key, double fallback) const
+{
+    const auto it =
+        std::find_if(m_metadata.begin(), m_metadata.end(), [&key](const auto& entry) { return entry.first == key; });
+    if (it == m_metadata.end())
+    {
+        return fallback;
+    }
+    if (const auto* scalar = std::get_if<GgufScalar>(&it->second))
+    {
+        return std::visit([](auto value) { return static_cast<double>(value); }, *scalar);
+    }
+    return fallback;
+}
+
 size_t GgufReader::StringArraySize(const std::string& key) const
 {
     const auto it =

@@ -19,6 +19,7 @@
 #include "GgufSummary.h"
 #include "HeadlessContext.h"
 #include "MatVec.h"
+#include "ModelSummary.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
 #include "RenderGraph/RenderGraphNodeResource.h"
@@ -189,6 +190,16 @@ int main(int argc, char** argv)
             return 2;
         }
         return muyo_llm::PrintGgufSummary(argv[2]);
+    }
+    // --model validates the tensor manifest; no device needed.
+    if (mode == "--model")
+    {
+        if (argc < 3)
+        {
+            std::fprintf(stderr, "usage: %s --model <gguf>\n", argv[0]);
+            return 2;
+        }
+        return muyo_llm::PrintModelSummary(argv[2]);
     }
     // --tokenize uses the GGUF tokenizer; it also needs no device.
     if (mode == "--tokenize")

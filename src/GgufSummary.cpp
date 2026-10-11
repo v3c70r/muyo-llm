@@ -35,7 +35,7 @@ int PrintGgufSummary(const std::string& path)
         std::printf("\n");
 
         const auto& tensors = reader.Tensors();
-        const size_t shown = tensors.size() < 5 ? tensors.size() : 5;
+        const size_t shown = tensors.size() < 8 ? tensors.size() : 8;
         for (size_t i = 0; i < shown; ++i)
         {
             std::printf("[gguf] tensor %-32s type=%u dims=", tensors[i].name.c_str(), tensors[i].type);

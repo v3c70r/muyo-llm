@@ -85,6 +85,10 @@ public:
 
     /// @return A metadata value as a string, or `fallback` when absent or not a string.
     std::string StringOr(const std::string& key, const std::string& fallback) const;
+    /// @return A metadata value as an unsigned integer, or `fallback` when absent or not numeric.
+    uint64_t UintOr(const std::string& key, uint64_t fallback) const;
+    /// @return A metadata value as a double, or `fallback` when absent or not numeric.
+    double FloatOr(const std::string& key, double fallback) const;
     /// @return The length of a string-array metadata value, or 0 when absent or not one.
     size_t StringArraySize(const std::string& key) const;
     /// @return Element `index` of a string-array metadata value.

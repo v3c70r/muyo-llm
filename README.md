@@ -35,7 +35,9 @@ work, as is `flash_attn.comp`.
 data; a GPT-2/Qwen2 byte-level BPE tokenizer reads the vocab and merges; `--embed <gguf> <token>`
 loads a model's token embedding and gathers one row through the graph, verified against the file.
 `--tokenize <gguf> <text>` round-trips and checks the known Qwen2 ids (`"Hello world!"` ->
-`9707 1879 0`). The tokenizer's pre-tokenizer covers ASCII only.
+`9707 1879 0`). `--model <gguf>` validates the tensor manifest against the Qwen2 layout - all 291
+tensors of qwen2.5-0.5b-instruct-fp16, with their shapes and dtypes - and prints the config the
+forward pass needs. The tokenizer's pre-tokenizer covers ASCII only.
 
 The F16 target model is downloaded for M4 (the attention cache append, M3b, waits on Muyo #81):
 
@@ -47,6 +49,9 @@ $ ./muyo_llm --gguf testdata/stories260K.gguf
 [gguf] tensor token_embd.weight  type=0 dims=64x512
 $ ./muyo_llm --embed testdata/stories260K.gguf 42
 [embed] OK: token 42's 64-value embedding loaded from testdata/stories260K.gguf matches the file
+$ ./muyo_llm --model testdata/qwen2.5-0.5b-instruct-fp16.gguf
+[model] architecture=qwen2 blocks=24 hidden=896 ffn=4864 heads=14 kv_heads=2
+[model] OK: manifest matches the qwen2 layout for 24 layers
 ```
 
 ```
