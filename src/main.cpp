@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "Argmax.h"
+#include "Attention.h"
 #include "DescriptorManager.h"
 #include "ElementwiseAdd.h"
 #include "GetRows.h"
@@ -176,11 +177,12 @@ int main(int argc, char** argv)
 {
     const std::string mode = argc > 1 ? argv[1] : "--smoke";
     if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
-        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax")
+        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax" && mode != "--attention")
     {
-        std::fprintf(stderr,
-                     "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax|--softmax]\n",
-                     argv[0]);
+        std::fprintf(
+            stderr,
+            "usage: %s [--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax|--softmax|--attention]\n",
+            argv[0]);
         return 2;
     }
 
@@ -220,6 +222,10 @@ int main(int argc, char** argv)
         if (mode == "--softmax")
         {
             return muyo_llm::RunSoftMax();
+        }
+        if (mode == "--attention")
+        {
+            return muyo_llm::RunAttention();
         }
         return RunSmoke();
     }
