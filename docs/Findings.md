@@ -203,3 +203,20 @@ graph can check for free. Either reject it at `Build()` or warn once.
 
 The cost here was a debugging round: zeros read as a sync or binding problem (the first fix was a
 missing host barrier, which was also wrong to guess at) before the empty execution order was printed.
+
+### F9 follow-up: which mechanism, decided
+
+Checked against llama.cpp rather than guessed, because muyo-llm's model is llama.cpp's:
+
+- llama.cpp binds every resource as a **static** `vk_subbuffer{buffer, offset, size}` →
+  `VkDescriptorBufferInfo` (`ggml-vulkan-types.h:1081`), writes descriptors **at record time** per
+  dispatch, and uses **no** dynamic offsets. So the primitive is a static byte offset, and the part
+  that matters is that it is resolved at **Execute**, not at Build.
+- Dynamic offsets are therefore not the fix, and `muyo-llm` should not ask for them. Only the
+  transposed-V column append needs the offset at all; K and row-major V append already go through
+  the GEMV's `base_work_group_y`.
+- GPU-driven would need **no** new API: bind the whole buffer and read `offset`/`range` from a
+  device buffer. Recorded so the graph does not grow a dynamic-offset mechanism for a case that
+  would not use it.
+
+Written into Muyo #81 as a comment rather than a second issue.
