@@ -314,7 +314,6 @@ int main(int argc, char** argv)
                 return 2;
             }
             muyo_llm::ForwardOptions options;
-            options.prompt = "Hello world";
             bool chosePrompt = false;
             const auto value = [&](int& index, const char* name) -> std::string
             {
@@ -412,8 +411,12 @@ int main(int argc, char** argv)
                     return 2;
                 }
             }
-            if (!chosePrompt)
+            if (!chosePrompt && !options.chat)
             {
+                // A completion run needs a prompt; the default is the one the README uses. In chat
+                // mode an empty prompt means "no initial turn": interactive starts from the system
+                // turn, and a single turn falls back to "Hello" in RunFullModel.
+                options.prompt = "Hello world";
                 std::fprintf(stderr, "[forward] no -p/--tokens given, using -p \"%s\"\n", options.prompt.c_str());
             }
             return muyo_llm::RunFullModel(argv[2], options);
