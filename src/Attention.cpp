@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "GraphServices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -103,7 +104,7 @@ int RunAttention()
         }
     }
 
-    RenderGraphBuilder builder(GetRenderDevice());
+    RenderGraphBuilder builder(GraphServices());
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {

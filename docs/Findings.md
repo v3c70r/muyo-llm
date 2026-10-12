@@ -12,6 +12,12 @@ polish; confidence `confirmed` / `needs runtime validation` / `design preference
 
 These are as important as the gaps, because they are the guarantees `docs/Consumers.md` claims.
 
+- **The graph is given its services, not globals (#53).** Muyo `0294326` replaced the 15 singleton
+  lookups inside `src/RenderGraph/` with a `RenderGraphServices{device, resourceManager,
+  descriptorManager}` constructor. Every `RenderGraphBuilder` in this repo is now built with it
+  (`src/GraphServices.h`) rather than the transitional `(VkRenderDevice*)` shim, so the graph no
+  longer reaches for the engine's globals on the consumer's path. This is the switch Muyo's #53
+  commit says flips the `injected, not global` row in `docs/Consumers.md` from *gap* to *holds*.
 - **Embedding works.** After Muyo #68 (`0617102`), `add_subdirectory(<Muyo>)` plus
   `target_link_libraries(muyo_llm PRIVATE muyo_rg)` configures and builds from outside the tree.
   Evidence: this repository's first configure.
@@ -88,7 +94,12 @@ boundary would save the next consumer the same discovery.
 
 ## F5 — every node context carries a `MeshResourceManager&`
 
-**A, confirmed.** `RenderGraphNodeContext` holds `resourceManager` and `meshManager` references
+**A, resolved** — fixed by Muyo `0294326` (the injection slice of #53), which deletes the
+`MeshResourceManager&` from `RenderGraphNodeContext` and the two includes with it. Nothing read it
+for a compute node, so the fix is a removal rather than an injection, and it is compiler-enforced.
+The finding is kept for the record. Original text:
+
+`RenderGraphNodeContext` holds `resourceManager` and `meshManager` references
 (`RenderGraphNodeContext.h`), and `Execute()` dereferences the mesh singleton for every node
 including compute ones (`RenderGraphBuilder.cpp`: `context.meshManager = *GetMeshResourceManager()`).
 A non-renderer consumer inherits a renderer-shaped context and a renderer singleton it has no use

@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "GraphServices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -284,7 +285,7 @@ int RunTransformerLayer()
         }
     }
 
-    RenderGraphBuilder builder(GetRenderDevice());
+    RenderGraphBuilder builder(GraphServices());
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     const VkBufferUsageFlags inputUsage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     const auto buffer = [](uint32_t count, VkBufferUsageFlags usage)

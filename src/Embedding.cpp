@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Gguf.h"
+#include "GraphServices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -83,7 +84,7 @@ int RunEmbedding(const std::string& path, int32_t token)
         }
     }
 
-    RenderGraphBuilder builder(GetRenderDevice());
+    RenderGraphBuilder builder(GraphServices());
     const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     builder.AddResource("TokenEmbedding", BufferResourceDesc{.count = static_cast<uint64_t>(vocabSize) * embeddingDim,
                                                              .stride = sizeof(float),

@@ -20,6 +20,7 @@
 #include "FullModel.h"
 #include "GetRows.h"
 #include "GgufSummary.h"
+#include "GraphServices.h"
 #include "HeadlessContext.h"
 #include "KvCache.h"
 #include "MatVec.h"
@@ -93,7 +94,7 @@ int RunSmoke()
 {
     PrintDevice();
 
-    RenderGraphBuilder builder(GetRenderDevice());
+    RenderGraphBuilder builder(muyo_llm::GraphServices());
 
     // A graph-owned buffer. CPU_TO_GPU so the host can read it back without a staging copy; the
     // weights and KV cache later are imported/persistent rather than graph-owned, which is a

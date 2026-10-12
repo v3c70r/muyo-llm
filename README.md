@@ -139,6 +139,19 @@ ASan/UBSan.
 
 ## Upstream state
 
+**Validated against Muyo `fe40dd3`** ("Versioning policy: the library publishes, first-party
+consumers are named"). Rebuilt from clean and re-ran `scripts/sanity.sh` (all 12 modes, validation on)
+and `scripts/verify-forward.sh` (greedy tokens + token ids vs llama.cpp) with no compile error, no
+deprecation warning and no named runtime failure.
+
+Since the previously recorded pin `a8c4b55` (PR #82) the only code change upstream is `0294326`
+("The graph is given its services rather than looking them up", the injection slice of #53): the
+graph now takes a `RenderGraphServices{device, resourceManager, descriptorManager}` by construction
+and no longer looks the globals up itself, and `RenderGraphNodeContext` no longer carries a
+`MeshResourceManager&`. This repo was switched to the services constructor in the same pass
+(`src/GraphServices.h`), which is what Muyo's #53 commit says flips the `injected, not global` row
+in its `docs/Consumers.md` from *gap* to *holds* for this consumer.
+
 The gaps that blocked M0 and M1 in the plan have closed:
 
 - **Embeddable build** — [Muyo #68](https://github.com/v3c70r/Muyo/issues/68) landed (`0617102`).
@@ -150,7 +163,10 @@ The gaps that blocked M0 and M1 in the plan have closed:
 - **Static resource byte range** — [Muyo #81](https://github.com/v3c70r/Muyo/issues/81) landed as
   [PR #82](https://github.com/v3c70r/Muyo/pull/82) (`a8c4b55`): a resource use may declare a byte
   `offset`/`size`. This is the weight-slicing primitive; the KV append turned out not to need it.
+- **Injected graph services** — [Muyo #53](https://github.com/v3c70r/Muyo/issues/53)'s injection
+  slice landed as `0294326`; see above.
 
-Open, and not blocking M0/M1: reading the cooperative-matrix property sets can crash under one
+Open, and not blocking M0/M4: reading the cooperative-matrix property sets can crash under one
 driver + validation-layer pairing ([Muyo #72](https://github.com/v3c70r/Muyo/issues/72)), and the
-library boundary itself ([Muyo #53](https://github.com/v3c70r/Muyo/issues/53)).
+rest of the library boundary ([Muyo #53](https://github.com/v3c70r/Muyo/issues/53): the stated public
+surface, a shader-source provider, and declaring errors that name the entity).

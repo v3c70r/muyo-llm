@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "GraphServices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -97,7 +98,7 @@ int RunElementwiseAdd()
         hostB[index] = 1.0F + 0.25F * static_cast<float>(index);
     }
 
-    RenderGraphBuilder builder(GetRenderDevice());
+    RenderGraphBuilder builder(GraphServices());
 
     // A and B are uploaded from the host, so they carry TRANSFER_DST for `BufferResource::SetData`,
     // which stages the copy rather than assuming host-visible device memory. D is read back on the

@@ -15,6 +15,7 @@
 
 #include "ChatTemplate.h"
 #include "Gguf.h"
+#include "GraphServices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -506,7 +507,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         std::fprintf(stderr, "[forward] max_seq=%u prompt=%zu n_predict=%u\n", K_MAX_SEQ, prompt.size(),
                      options.nPredict);
 
-        RenderGraphBuilder builder(GetRenderDevice());
+        RenderGraphBuilder builder(GraphServices());
 
         const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         // When MUYO_DUMP is set the intermediates are made host-visible so they can be mapped for a

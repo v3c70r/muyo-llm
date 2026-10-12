@@ -1,0 +1,3 @@
+[submodule "thirdparty/Muyo"]
+	path = thirdparty/Muyo
+	url = git@github.com:v3c70r/Muyo.git
