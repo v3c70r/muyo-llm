@@ -17,7 +17,9 @@ These are as important as the gaps, because they are the guarantees `docs/Consum
   descriptorManager}` constructor. Every `RenderGraphBuilder` in this repo is now built with it
   (`src/GraphServices.h`) rather than the transitional `(VkRenderDevice*)` shim, so the graph no
   longer reaches for the engine's globals on the consumer's path. This is the switch Muyo's #53
-  commit says flips the `injected, not global` row in `docs/Consumers.md` from *gap* to *holds*.
+  commit says flips the `injected, not global` row in `docs/Consumers.md` from *gap* to *holds*;
+  that row is flipped in Muyo [PR #89](https://github.com/v3c70r/Muyo/pull/89)
+  ([issue #88](https://github.com/v3c70r/Muyo/issues/88)).
 - **Embedding works.** After Muyo #68 (`0617102`), `add_subdirectory(<Muyo>)` plus
   `target_link_libraries(muyo_llm PRIVATE muyo_rg)` configures and builds from outside the tree.
   Evidence: this repository's first configure.

@@ -164,7 +164,9 @@ The gaps that blocked M0 and M1 in the plan have closed:
   [PR #82](https://github.com/v3c70r/Muyo/pull/82) (`a8c4b55`): a resource use may declare a byte
   `offset`/`size`. This is the weight-slicing primitive; the KV append turned out not to need it.
 - **Injected graph services** — [Muyo #53](https://github.com/v3c70r/Muyo/issues/53)'s injection
-  slice landed as `0294326`; see above.
+  slice landed as `0294326`; see above. Its `docs/Consumers.md` `injected, not global` row is flipped
+to *holds* for this consumer in [PR #89](https://github.com/v3c70r/Muyo/pull/89)
+([issue #88](https://github.com/v3c70r/Muyo/issues/88)).
 
 Open, and not blocking M0/M4: reading the cooperative-matrix property sets can crash under one
 driver + validation-layer pairing ([Muyo #72](https://github.com/v3c70r/Muyo/issues/72)), and the
