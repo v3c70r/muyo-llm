@@ -253,7 +253,33 @@ are the cumulative products from the innermost dimension outward", and getting i
 first-element-only write, which looks like a binding or barrier bug rather than an arithmetic one.
 The transposing value append works with the correct multipliers and no descriptor offset — the
 destination base rides in `misalign_offsets`' low 16 bits (`get_doffset()`), enough for a cache
-position up to 65535.
+position up to 65535. A second trap sits next to the first: `pack_fastdiv_L(l012, l01, l0)` packs
+the **outermost** divisor's shift in the low byte, so building the word as `l0 | l1<<8 | l2<<16`
+reverses the shifts while the multipliers stay correct, and the destination index is silently wrong
+past the first few elements. The M4 forward hit exactly that (the transposed value cache came out
+half-written), which is why both halves of the contract are written down here.
+
+## F13 — the graph takes the whole model, but bindings are fixed at Build
+
+**A, positive with a constraint.** The full Qwen2.5-0.5B forward is **one** graph of 436 nodes over
+roughly 700 buffer resources (291 weights, 48 KV-cache buffers, the rest per-layer transients).
+`Build()` is called once and `Execute()` is called per token; the only thing that changes between
+tokens is the KV state and three push constants (the position, the RoPE destination offset and the
+score dispatch). It builds and runs without a graph-side limit being hit, which is the answer to the
+scalability half of the boundary test.
+
+The constraint is that a resource use is bound at Build, so a 24-layer model needs 24 sets of weight
+resources — one node per layer. A decode engine cannot build **one** layer graph and re-point it at
+layer `l`'s weights per execution; the alternatives are 24 nodes (what this does), rebuilding the
+graph per layer, or putting every layer's weights in one arena and binding a static slice per node
+— which is exactly what Muyo #81/PR #82 now enables. So the static range is not only for imported
+slices; it is also how a single-arena weight layout is bound. The deferred "base known only per
+execution" half would be the thing that lets one graph node rotate through layers, and nothing here
+needs it.
+
+Related: Muyo inserts no barrier between the last node and a host `Map()`, so the `argmax` node ends
+with its own compute-to-host `VkMemoryBarrier2` (Finding F4) — the only place this model has to
+reach past the graph API.
 
 ## M3b — the KV-cache append, resolved without a new primitive
 

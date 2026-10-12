@@ -242,6 +242,17 @@ two-token cache match the CPU reference. This needed no new Muyo primitive — s
 **Acceptance:** for one prompt and model, the first K greedy tokens match `llama-cli`, and
 logits match the CPU reference within tolerance.
 
+**Done (`--forward`, M4).** The whole 24-layer Qwen2.5-0.5B runs as one 436-node graph: embedding,
+24 layers of `rms_norm` → QKV projections (bias folded in through `mul_mat_vec`'s `BIAS0` fusion) →
+RoPE → GQA attention (`mul_mat_vec` batched over heads) → output projection → residual → gated MLP,
+then the final norm, the LM head and `argmax`. The KV cache is 48 persistent buffers, appended in
+place each step (M3b). Greedy tokens match llama.cpp's CPU backend exactly —
+`scripts/verify-forward.sh` builds a small oracle against `libllama` and compares, e.g.
+`Hello world` → `! I'm trying to create a program`. A numpy reference (`tools/reference_qwen2.py`)
+and the `MUYO_LOGITS`/`MUYO_DUMP` dumps were what localised the two bugs found on the way (a score
+GEMV dispatched over `position` instead of `position + 1`, and the `copy.comp` fastdiv shift amounts
+packed in the wrong order — F12).
+
 ### M5 — Maturity assessment and feedback
 
 - Findings written in Muyo's format (`C/A/N/P`, confidence, acceptance criterion).

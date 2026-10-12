@@ -16,6 +16,7 @@
 #include "DescriptorManager.h"
 #include "ElementwiseAdd.h"
 #include "Embedding.h"
+#include "FullModel.h"
 #include "GetRows.h"
 #include "GgufSummary.h"
 #include "HeadlessContext.h"
@@ -240,9 +241,9 @@ int main(int argc, char** argv)
             return 1;
         }
     }
-    const std::vector<std::string> modes = {"--smoke",   "--add",       "--matvec",  "--rmsnorm",
-                                            "--rope",    "--swiglu",    "--getrows", "--argmax",
-                                            "--softmax", "--attention", "--kvcache", "--layer"};
+    const std::vector<std::string> modes = {"--smoke",   "--add",     "--matvec", "--rmsnorm", "--rope",
+                                            "--swiglu",  "--getrows", "--argmax", "--softmax", "--attention",
+                                            "--kvcache", "--layer",   "--forward"};
     if (std::find(modes.begin(), modes.end(), mode) == modes.end())
     {
         std::fprintf(stderr, "usage: %s", argv[0]);
@@ -302,6 +303,37 @@ int main(int argc, char** argv)
         if (mode == "--layer")
         {
             return muyo_llm::RunTransformerLayer();
+        }
+        if (mode == "--forward")
+        {
+            if (argc < 4)
+            {
+                std::fprintf(stderr, "usage: %s --forward <gguf> <token-ids-csv> [n_predict]\n", argv[0]);
+                return 2;
+            }
+            std::vector<int32_t> tokens;
+            std::string field;
+            for (const char* cursor = argv[3];; ++cursor)
+            {
+                if (*cursor == ',' || *cursor == '\0')
+                {
+                    if (!field.empty())
+                    {
+                        tokens.push_back(static_cast<int32_t>(std::stol(field)));
+                        field.clear();
+                    }
+                    if (*cursor == '\0')
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    field.push_back(*cursor);
+                }
+            }
+            const uint32_t nPredict = argc > 4 ? static_cast<uint32_t>(std::stoul(argv[4])) : 8;
+            return muyo_llm::RunFullModel(argv[2], tokens, nPredict);
         }
         return RunSmoke();
     }

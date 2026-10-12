@@ -106,6 +106,17 @@ constexpr uint32_t NUM_ROWS = 1;    ///< Rows one workgroup produces; the dispat
 constexpr uint32_t NUM_COLS = 2;    ///< Column-groups per workgroup; 1 for the plain path.
 }  // namespace llama_mat_vec_spec_constants
 
+/// `fusionFlags` bits of `mul_mat_vec.comp`, from `ggml-vulkan-types.h`. A set bit makes the GEMV
+/// add `FUSE0`/`FUSE1` at the output row, which is how the projections fold their bias in (so a
+/// bias is a descriptor binding, not a second pass over the row).
+namespace llama_mat_vec_fusion
+{
+constexpr uint32_t BIAS0 = 0x1;   ///< Add `FUSE0[d_offset + row]` to the result.
+constexpr uint32_t BIAS1 = 0x2;   ///< Add `FUSE1[d_offset + row]` to the result.
+constexpr uint32_t SCALE0 = 0x4;  ///< Multiply the result by `FUSE0` (batched index).
+constexpr uint32_t SCALE1 = 0x8;  ///< Multiply the result by `FUSE1` (batched index).
+}  // namespace llama_mat_vec_fusion
+
 /// `rope_neox.comp`'s `push_constant` block, from `rope_params.glsl`. 30 four-byte words.
 ///
 /// RoPE rotates each head's channels in place. The fields a caller must get right are `nDims`

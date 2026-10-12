@@ -77,6 +77,24 @@ at the current position, then attends over the keys written so far. Both run thr
 no new Muyo primitive — the key rides in `rope_neox`'s `d_offset` and the value column rides in
 `copy.comp`'s `misalign_offsets` (see `docs/Findings.md`).
 
+**M4 complete.** The whole 24-layer Qwen2.5-0.5B runs as one graph: embedding, 24 layers of
+rms-norm / QKV+bias / RoPE / grouped-query attention / output projection / residual / gated MLP,
+then the final norm, the LM head and greedy `argmax`. `--forward <gguf> <token-ids> [n]` feeds the
+prompt one token at a time and samples. Its greedy tokens match llama.cpp's CPU backend exactly:
+
+```
+$ ./muyo_llm --forward testdata/qwen2.5-0.5b-instruct-fp16.gguf 9707,1879 8
+[forward] layers=24 hidden=896 ffn=4864 heads=14 kv_heads=2 head_dim=64 vocab=151936 gqa=7
+[graph] 436 nodes, 291 weight tensors
+[forward] generated 8 tokens: 0 358 2776 4460 311 1855 264 2025   # "! I'm trying to create a program"
+$ scripts/verify-forward.sh            # builds a libllama oracle and diffs the sequences
+verify-forward: OK (8 greedy tokens match llama.cpp)
+```
+
+`tools/reference_qwen2.py` is a numpy reference for the same forward, and `MUYO_LOGITS=<file>` /
+`MUYO_DUMP=<dir>` make the engine write logits and per-layer intermediates so they can be compared
+element by element.
+
 ## Build
 
 Muyo is embedded as a submodule; a development checkout can be substituted with
