@@ -1,5 +1,6 @@
 #include "FullModel.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -18,6 +19,8 @@
 #include "RenderGraph/RenderGraphResourceDesc.h"
 #include "RenderResource.h"
 #include "RenderResourceManager.h"
+#include "Sampler.h"
+#include "Tokenizer.h"
 #include "VkRenderDevice.h"
 #include "vk_mem_alloc.h"
 
@@ -45,8 +48,9 @@ namespace
 /// Cache length. The value GEMV reduces the **whole** cache row every step, because `mul_mat_vec`
 /// hardcodes A's row stride to `ncols` (Finding F11): a short cache does not shrink the *work*,
 /// only the score GEMV's dispatch. The transposing value append carries its position in
-/// `misalign_offsets`' 16 bits, so the ceiling is 65535; 96 keeps the buffers small on an APU.
-constexpr uint32_t K_MAX_SEQ = 96;
+/// `misalign_offsets`' 16 bits, so the ceiling is 65535; 2048 is a few hundred MB of cache on this
+/// model and leaves room for a prompt and a reply.
+constexpr uint32_t K_MAX_SEQ = 2048;
 constexpr uint32_t K_GEMV_BLOCK_SIZE = 32;
 constexpr uint32_t K_SOFT_MAX_BLOCK_SIZE = 32;
 constexpr uint32_t K_ARGMAX_BLOCK_SIZE = 256;
@@ -475,17 +479,25 @@ auto ArgmaxExecute(uint32_t vocab)
 }
 }  // namespace
 
-int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt, uint32_t nPredict)
+int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
 {
     try
     {
         const GgufReader reader(ggufPath);
         const Qwen2Config config = ReadQwen2Config(reader);
-        std::printf("[forward] %s\n", ggufPath.c_str());
-        std::printf("[forward] layers=%u hidden=%u ffn=%u heads=%u kv_heads=%u head_dim=%u vocab=%u gqa=%u\n",
-                    config.layers, config.hidden, config.feedForward, config.heads, config.kvHeads, config.headDim,
-                    config.vocab, config.gqa);
-        std::printf("[forward] max_seq=%u prompt=%zu n_predict=%u\n", K_MAX_SEQ, prompt.size(), nPredict);
+        const Tokenizer tokenizer(reader);
+        const std::vector<int32_t> prompt = options.prompt.empty() ? options.tokens : tokenizer.Encode(options.prompt);
+        if (prompt.size() >= K_MAX_SEQ)
+        {
+            std::fprintf(stderr, "[fail] prompt is %zu tokens, the cache holds %u\n", prompt.size(), K_MAX_SEQ);
+            return 1;
+        }
+        std::fprintf(stderr, "[forward] %s\n", ggufPath.c_str());
+        std::fprintf(stderr, "[forward] layers=%u hidden=%u ffn=%u heads=%u kv_heads=%u head_dim=%u vocab=%u gqa=%u\n",
+                     config.layers, config.hidden, config.feedForward, config.heads, config.kvHeads, config.headDim,
+                     config.vocab, config.gqa);
+        std::fprintf(stderr, "[forward] max_seq=%u prompt=%zu n_predict=%u\n", K_MAX_SEQ, prompt.size(),
+                     options.nPredict);
 
         RenderGraphBuilder builder(GetRenderDevice());
 
@@ -493,7 +505,6 @@ int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt
         // When MUYO_DUMP is set the intermediates are made host-visible so they can be mapped for a
         // comparison; the weights stay device-local either way.
         const bool hostVisible = std::getenv("MUYO_DUMP") != nullptr;
-        const VkBufferUsageFlags weightUsage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         const auto weightDesc = [](uint64_t count, uint64_t stride)
         {
             return BufferResourceDesc{.count = count,
@@ -949,8 +960,8 @@ int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt
 
         builder.Build();
 
-        std::printf("[graph] %zu nodes, %zu weight tensors\n", builder.GetExecutionOrder().size(),
-                    weightUploads.size());
+        std::fprintf(stderr, "[graph] %zu nodes, %zu weight tensors\n", builder.GetExecutionOrder().size(),
+                     weightUploads.size());
 
         // Upload. The weights are GPU-only, so SetData stages and copies each one.
         for (const auto& [name, tensor] : weightUploads)
@@ -982,28 +993,69 @@ int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt
 
         auto* pTokenId = GetRenderResourceManager()->GetResource<BufferResource>("token_id");
         auto* pRopePos = GetRenderResourceManager()->GetResource<BufferResource>("rope_pos");
-        auto* pNext = GetRenderResourceManager()->GetResource<BufferResource>("next_token");
         auto* pLogitsResource = GetRenderResourceManager()->GetResource<BufferResource>("logits");
         bool wroteLogits = false;
 
-        std::vector<int32_t> tokens = prompt;
+        std::vector<int32_t> fed = prompt;
         std::vector<int32_t> generated;
         const int32_t eos = static_cast<int32_t>(reader.UintOr("tokenizer.ggml.eos_token_id", UINT64_MAX));
-        if (tokens.empty())
+        if (fed.empty())
         {
-            const int32_t bos = static_cast<int32_t>(reader.UintOr("tokenizer.ggml.bos_token_id", 0));
-            tokens.push_back(bos);
+            fed.push_back(static_cast<int32_t>(reader.UintOr("tokenizer.ggml.bos_token_id", 0)));
         }
-
-        for (uint32_t step = 0; step < K_MAX_SEQ && generated.size() < nPredict; ++step)
+        std::fprintf(stderr, "[forward] prompt tokens:");
+        for (int32_t token : fed)
         {
-            const int32_t id = step < tokens.size() ? tokens[step] : generated[step - tokens.size()];
+            std::fprintf(stderr, " %d", token);
+        }
+        std::fprintf(stderr, "\n");
+
+        Sampler sampler(options.sampler);
+        // Streaming output: a token is a byte piece, so a UTF-8 character can span two of them.
+        // Hold back an incomplete trailing sequence rather than print a replacement character.
+        std::string pending;
+        const auto flushText = [&pending](bool final)
+        {
+            size_t complete = 0;
+            while (complete < pending.size())
+            {
+                const auto lead = static_cast<unsigned char>(pending[complete]);
+                size_t length = 1;
+                if ((lead & 0xE0) == 0xC0)
+                {
+                    length = 2;
+                }
+                else if ((lead & 0xF0) == 0xE0)
+                {
+                    length = 3;
+                }
+                else if ((lead & 0xF8) == 0xF0)
+                {
+                    length = 4;
+                }
+                if (!final && complete + length > pending.size())
+                {
+                    break;
+                }
+                complete += length;
+            }
+            std::fwrite(pending.data(), 1, complete, stdout);
+            pending.erase(0, complete);
+        };
+
+        const auto startTime = std::chrono::steady_clock::now();
+        for (uint32_t step = 0; step < K_MAX_SEQ && generated.size() < options.nPredict; ++step)
+        {
+            const int32_t id = fed[step];
             const int32_t pos = static_cast<int32_t>(step);
             position = step;
             pTokenId->SetData(&id, sizeof(int32_t));
             pRopePos->SetData(&pos, sizeof(int32_t));
             builder.Execute();
-            if (step + 1 >= tokens.size())
+            if (step + 1 < fed.size())
+            {
+                continue;  // the prompt still has tokens to consume
+            }
             {
                 if (!wroteLogits)
                 {
@@ -1042,7 +1094,7 @@ int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt
                             out.write(reinterpret_cast<const char*>(values), sizeof(float) * count);
                             resource->Unmap();
                         }
-                        std::printf("[forward] dumped intermediates to %s\n", dumpDir);
+                        std::fprintf(stderr, "[forward] dumped intermediates to %s\n", dumpDir);
                     }
                     if (const char* dumpPath = std::getenv("MUYO_LOGITS"))
                     {
@@ -1052,15 +1104,19 @@ int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt
                         out.write(reinterpret_cast<const char*>(&n), sizeof(n));
                         out.write(reinterpret_cast<const char*>(pLogits), sizeof(float) * config.vocab);
                         pLogitsResource->Unmap();
-                        std::printf("[forward] wrote logits of step %u to %s\n", step, dumpPath);
+                        std::fprintf(stderr, "[forward] wrote logits of step %u to %s\n", step, dumpPath);
                     }
                     wroteLogits = true;
                 }
-                const auto* pResult = static_cast<const int32_t*>(pNext->Map());
-                const int32_t next = pResult[0];
-                pNext->Unmap();
+                auto* pLogits = static_cast<float*>(pLogitsResource->Map());
+                const int32_t next = sampler.Sample(pLogits, static_cast<int32_t>(config.vocab), fed);
+                pLogitsResource->Unmap();
+
+                fed.push_back(next);
                 generated.push_back(next);
-                std::printf("[forward] step %u token %d -> %d\n", step, id, next);
+                pending += tokenizer.TokenBytes(next);
+                flushText(false);
+                std::fflush(stdout);
                 if (eos != static_cast<int32_t>(UINT64_MAX) && next == eos)
                 {
                     break;
@@ -1068,12 +1124,21 @@ int RunFullModel(const std::string& ggufPath, const std::vector<int32_t>& prompt
             }
         }
 
-        std::printf("[forward] generated %zu tokens:", generated.size());
+        flushText(true);
+        std::printf("\n");
+        std::fflush(stdout);
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - startTime).count();
+        std::fprintf(stderr, "[forward] generated %zu tokens:", generated.size());
         for (int32_t token : generated)
         {
-            std::printf(" %d", token);
+            std::fprintf(stderr, " %d", token);
         }
-        std::printf("\n");
+        std::fprintf(stderr, "\n");
+        if (seconds > 0.0)
+        {
+            std::fprintf(stderr, "[forward] %.2f tok/s (%.0f ms total)\n",
+                         static_cast<double>(generated.size()) / seconds, seconds * 1000.0);
+        }
         return 0;
     }
     catch (const std::exception& exception)

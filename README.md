@@ -79,21 +79,31 @@ no new Muyo primitive — the key rides in `rope_neox`'s `d_offset` and the valu
 
 **M4 complete.** The whole 24-layer Qwen2.5-0.5B runs as one graph: embedding, 24 layers of
 rms-norm / QKV+bias / RoPE / grouped-query attention / output projection / residual / gated MLP,
-then the final norm, the LM head and greedy `argmax`. `--forward <gguf> <token-ids> [n]` feeds the
-prompt one token at a time and samples. Its greedy tokens match llama.cpp's CPU backend exactly:
+then the final norm, the LM head and sampling. `--forward` feeds the prompt one token at a time,
+then generates:
 
 ```
-$ ./muyo_llm --forward testdata/qwen2.5-0.5b-instruct-fp16.gguf 9707,1879 8
-[forward] layers=24 hidden=896 ffn=4864 heads=14 kv_heads=2 head_dim=64 vocab=151936 gqa=7
-[graph] 436 nodes, 291 weight tensors
-[forward] generated 8 tokens: 0 358 2776 4460 311 1855 264 2025   # "! I'm trying to create a program"
-$ scripts/verify-forward.sh            # builds a libllama oracle and diffs the sequences
+$ ./muyo_llm --forward testdata/qwen2.5-0.5b-instruct-fp16.gguf -p "Hello world" -n 8
+! I'm trying to create a program
+$ ./muyo_llm --forward testdata/qwen2.5-0.5b-instruct-fp16.gguf -p "The capital of France is" \
+      -n 64 --temp 0.7 --top-k 50 --top-p 0.9 --repeat-penalty 1.15 --seed 7
+<sampled text>
+$ scripts/verify-forward.sh            # builds a libllama oracle and diffs the greedy ids
 verify-forward: OK (8 greedy tokens match llama.cpp)
 ```
 
-`tools/reference_qwen2.py` is a numpy reference for the same forward, and `MUYO_LOGITS=<file>` /
-`MUYO_DUMP=<dir>` make the engine write logits and per-layer intermediates so they can be compared
-element by element.
+Flags: `-p/--prompt <text>` or `--tokens id,id` (the tokenizer is used only for `-p`), `-n`,
+`--temp`, `--top-k`, `--top-p`, `--repeat-penalty`, `--repeat-last-n`, `--seed`. The default is
+greedy, so a run without sampler flags is reproducible. The generated text streams to stdout (a
+UTF-8 character spanning two byte-piece tokens is held back until it completes); diagnostics and
+the token-id summary go to stderr. The prompt path is ASCII (the pre-tokenizer is the ASCII subset
+of Qwen2's, see `src/Tokenizer.h`), but output decoding is byte-exact for any token, so non-ASCII
+replies render correctly.
+
+It is a completion engine, not a chat one: `tokenizer.chat_template` is not applied, and the context
+is capped at `K_MAX_SEQ = 2048`. `tools/reference_qwen2.py` is a numpy reference for the same
+forward, and `MUYO_LOGITS=<file>` / `MUYO_DUMP=<dir>` make the engine write logits and per-layer
+intermediates so they can be compared element by element.
 
 ## Build
 

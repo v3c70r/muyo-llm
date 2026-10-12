@@ -253,6 +253,14 @@ and the `MUYO_LOGITS`/`MUYO_DUMP` dumps were what localised the two bugs found o
 GEMV dispatched over `position` instead of `position + 1`, and the `copy.comp` fastdiv shift amounts
 packed in the wrong order — F12).
 
+**M4 as a basic CLI (done).** `--forward` takes text (`-p`) or ids (`--tokens`), samples with
+`--temp/--top-k/--top-p/--repeat-penalty/--repeat-last-n/--seed` (greedy by default), streams the
+reply to stdout with the UTF-8 boundary held back across byte-piece tokens, and reports tok/s. The
+context is `K_MAX_SEQ = 2048`. The prompt path is ASCII (the pre-tokenizer is the ASCII subset of
+Qwen2's); output decoding is byte-exact, so non-ASCII replies render. Not done: the chat template
+(the model is instruct, so the default is raw completion) and batched prefill (the prompt is still
+fed one token at a time).
+
 ### M5 — Maturity assessment and feedback
 
 - Findings written in Muyo's format (`C/A/N/P`, confidence, acceptance criterion).

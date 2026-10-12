@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -308,32 +309,101 @@ int main(int argc, char** argv)
         {
             if (argc < 4)
             {
-                std::fprintf(stderr, "usage: %s --forward <gguf> <token-ids-csv> [n_predict]\n", argv[0]);
+                std::fprintf(stderr, "usage: %s --forward <gguf> [-p <text> | --tokens id,id] [-n N] [sampler flags]\n",
+                             argv[0]);
                 return 2;
             }
-            std::vector<int32_t> tokens;
-            std::string field;
-            for (const char* cursor = argv[3];; ++cursor)
+            muyo_llm::ForwardOptions options;
+            options.prompt = "Hello world";
+            bool chosePrompt = false;
+            const auto value = [&](int& index, const char* name) -> std::string
             {
-                if (*cursor == ',' || *cursor == '\0')
+                if (index + 1 >= argc)
                 {
-                    if (!field.empty())
+                    std::fprintf(stderr, "%s needs a value\n", name);
+                    throw std::runtime_error("missing value");
+                }
+                return argv[++index];
+            };
+            const auto parseTokens = [](const std::string& list)
+            {
+                std::vector<int32_t> tokens;
+                std::string field;
+                for (const char* cursor = list.c_str();; ++cursor)
+                {
+                    if (*cursor == ',' || *cursor == '\0')
                     {
-                        tokens.push_back(static_cast<int32_t>(std::stol(field)));
-                        field.clear();
+                        if (!field.empty())
+                        {
+                            tokens.push_back(static_cast<int32_t>(std::stol(field)));
+                            field.clear();
+                        }
+                        if (*cursor == '\0')
+                        {
+                            break;
+                        }
                     }
-                    if (*cursor == '\0')
+                    else
                     {
-                        break;
+                        field.push_back(*cursor);
                     }
+                }
+                return tokens;
+            };
+            for (int i = 3; i < argc; ++i)
+            {
+                const std::string arg = argv[i];
+                if (arg == "-p" || arg == "--prompt")
+                {
+                    options.prompt = value(i, "--prompt");
+                    options.tokens.clear();
+                    chosePrompt = true;
+                }
+                else if (arg == "--tokens")
+                {
+                    options.tokens = parseTokens(value(i, "--tokens"));
+                    options.prompt.clear();
+                    chosePrompt = true;
+                }
+                else if (arg == "-n" || arg == "--n-predict")
+                {
+                    options.nPredict = static_cast<uint32_t>(std::stoul(value(i, "-n")));
+                }
+                else if (arg == "--temp" || arg == "--temperature")
+                {
+                    options.sampler.temperature = std::stof(value(i, "--temp"));
+                }
+                else if (arg == "--top-k")
+                {
+                    options.sampler.topK = std::stoi(value(i, "--top-k"));
+                }
+                else if (arg == "--top-p")
+                {
+                    options.sampler.topP = std::stof(value(i, "--top-p"));
+                }
+                else if (arg == "--repeat-penalty")
+                {
+                    options.sampler.repeatPenalty = std::stof(value(i, "--repeat-penalty"));
+                }
+                else if (arg == "--repeat-last-n")
+                {
+                    options.sampler.repeatLastN = std::stoi(value(i, "--repeat-last-n"));
+                }
+                else if (arg == "--seed")
+                {
+                    options.sampler.seed = std::stoull(value(i, "--seed"));
                 }
                 else
                 {
-                    field.push_back(*cursor);
+                    std::fprintf(stderr, "unknown --forward option: %s\n", arg.c_str());
+                    return 2;
                 }
             }
-            const uint32_t nPredict = argc > 4 ? static_cast<uint32_t>(std::stoul(argv[4])) : 8;
-            return muyo_llm::RunFullModel(argv[2], tokens, nPredict);
+            if (!chosePrompt)
+            {
+                std::fprintf(stderr, "[forward] no -p/--tokens given, using -p \"%s\"\n", options.prompt.c_str());
+            }
+            return muyo_llm::RunFullModel(argv[2], options);
         }
         return RunSmoke();
     }

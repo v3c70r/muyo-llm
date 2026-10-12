@@ -32,7 +32,9 @@ g++ -O2 -std=c++17 tools/llama_oracle.cpp \
 
 expected="$(cd build && ./llama_oracle "$MODEL" "$TOKENS" /tmp/muyo_oracle_logits.bin "$N" 2>/dev/null |
     sed -n 's/^\[oracle\] greedy [0-9]*://p')"
-actual="$(cd build && ./muyo_llm --forward "$MODEL" "$TOKENS" "$N" 2>/dev/null |
+# The engine streams generated text to stdout and diagnostics to stderr; the token ids are the last
+# stderr line, so read both streams.
+actual="$(cd build && ./muyo_llm --forward "$MODEL" --tokens "$TOKENS" -n "$N" 2>&1 >/dev/null |
     sed -n 's/^\[forward\] generated [0-9]* tokens://p')"
 
 echo "oracle:$expected"

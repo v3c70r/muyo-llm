@@ -361,6 +361,15 @@ std::vector<int32_t> Tokenizer::Encode(const std::string& text) const
     return ids;
 }
 
+std::string Tokenizer::TokenBytes(int32_t id) const
+{
+    if (id < 0 || static_cast<size_t>(id) >= m_idToToken.size())
+    {
+        return {};
+    }
+    return ByteDecode(m_idToToken[static_cast<size_t>(id)]);
+}
+
 std::string Tokenizer::Decode(const std::vector<int32_t>& ids) const
 {
     std::string text;

@@ -33,6 +33,11 @@ public:
     /// @return The token string for an id, or an empty string when out of range.
     const std::string& TokenFor(size_t id) const;
 
+    /// @return The raw bytes token `id` expands to, for streaming output. A vocabulary string that
+    /// is GPT-2-byte-encoded is decoded back to bytes; a printable special token such as
+    /// `<|im_end|>` maps to itself through the same table.
+    std::string TokenBytes(int32_t id) const;
+
     /// Tokenize `text`.
     /// @param text Input text (ASCII is fully supported; other scripts are best-effort).
     /// @return The token ids.
