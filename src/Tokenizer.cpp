@@ -1,22 +1,17 @@
 #include "Tokenizer.h"
 
-#include <cctype>
 #include <climits>
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
 
 #include "Gguf.h"
+#include "llama/unicode.h"
 
 namespace muyo_llm
 {
 namespace
 {
-bool IsAsciiLetter(unsigned char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
-bool IsAsciiDigit(unsigned char c) { return c >= '0' && c <= '9'; }
-bool IsAsciiSpace(unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'; }
-bool IsNewline(unsigned char c) { return c == '\n' || c == '\r'; }
-
 /// Append the UTF-8 encoding of `codePoint`.
 void AppendUtf8(std::string& out, uint32_t codePoint)
 {
@@ -117,6 +112,42 @@ Tokenizer::Tokenizer(const GgufReader& reader)
     }
 
     BuildByteTables();
+
+    // The pre-tokenizer regex, keyed by `tokenizer.ggml.pre` (llama.cpp's pre-type). The two the
+    // models here use; anything else falls back to GPT-2's.
+    const std::string pre = reader.StringOr("tokenizer.ggml.pre", "gpt2");
+    if (pre == "qwen2" || pre == "stablelm2" || pre == "hunyuan" || pre == "solar-open")
+    {
+        m_regexExprs = {
+            "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?"
+            "\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"};
+    }
+    else
+    {
+        m_regexExprs = {"'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)"};
+    }
+
+    // Special tokens (CONTROL = 3, USER_DEFINED = 4) are matched before BPE, like llama.cpp's
+    // `parse_special`. They are the only tokens with a role beyond "a piece of text".
+    if (reader.Has("tokenizer.ggml.token_type"))
+    {
+        if (const auto* array = std::get_if<GgufArray>(&reader.Metadata("tokenizer.ggml.token_type")))
+        {
+            if (const auto* types = std::get_if<std::vector<int32_t>>(array))
+            {
+                m_isSpecial.assign(m_idToToken.size(), 0);
+                for (size_t i = 0; i < types->size() && i < m_idToToken.size(); ++i)
+                {
+                    const int32_t type = (*types)[i];
+                    if (type == 3 || type == 4)
+                    {
+                        m_specialTokens.push_back(SpecialToken{m_idToToken[i], static_cast<int32_t>(i)});
+                        m_isSpecial[i] = 1;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void Tokenizer::BuildByteTables()
@@ -178,130 +209,9 @@ std::string Tokenizer::ByteDecode(const std::string& token) const
 
 std::vector<std::string> Tokenizer::PreTokenize(const std::string& text) const
 {
-    // The ASCII reading of Qwen2's pattern, alternatives tried in order at each position:
-    //   contractions | optional-non-letter + letters | digit | optional-space + symbols + newlines
-    //   | whitespace up to a newline | trailing whitespace | whitespace
-    std::vector<std::string> pieces;
-    size_t i = 0;
-    const size_t n = text.size();
-    while (i < n)
-    {
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        size_t match = 0;
-
-        // 1. contractions: 's 't 're 've 'm 'll 'd
-        if (c == '\'')
-        {
-            const std::string tail = text.substr(i, 3);
-            if (tail.size() >= 2)
-            {
-                const char c1 = static_cast<char>(std::tolower(static_cast<unsigned char>(tail[1])));
-                if (c1 == 's' || c1 == 't' || c1 == 'm' || c1 == 'd')
-                {
-                    match = 2;
-                }
-                else if (tail.size() >= 3)
-                {
-                    const char c2 = static_cast<char>(std::tolower(static_cast<unsigned char>(tail[2])));
-                    if ((c1 == 'r' && c2 == 'e') || (c1 == 'v' && c2 == 'e') || (c1 == 'l' && c2 == 'l'))
-                    {
-                        match = 3;
-                    }
-                }
-            }
-        }
-        // 2. [^\r\n\p{L}\p{N}]?\p{L}+
-        if (match == 0)
-        {
-            size_t j = i;
-            if (!IsAsciiLetter(c) && !IsAsciiDigit(c) && !IsNewline(c))
-            {
-                ++j;
-            }
-            if (j < n && IsAsciiLetter(static_cast<unsigned char>(text[j])))
-            {
-                while (j < n && IsAsciiLetter(static_cast<unsigned char>(text[j])))
-                {
-                    ++j;
-                }
-                match = j - i;
-            }
-        }
-        // 3. \p{N}
-        if (match == 0 && IsAsciiDigit(c))
-        {
-            match = 1;
-        }
-        // 4. ?[^\s\p{L}\p{N}]+[\r\n]*
-        if (match == 0)
-        {
-            size_t j = i;
-            if (c == ' ')
-            {
-                ++j;
-            }
-            size_t symbols = j;
-            while (j < n && !IsAsciiSpace(static_cast<unsigned char>(text[j])) &&
-                   !IsAsciiLetter(static_cast<unsigned char>(text[j])) &&
-                   !IsAsciiDigit(static_cast<unsigned char>(text[j])))
-            {
-                ++j;
-            }
-            if (j > symbols)
-            {
-                while (j < n && IsNewline(static_cast<unsigned char>(text[j])))
-                {
-                    ++j;
-                }
-                match = j - i;
-            }
-        }
-        // 5. \s*[\r\n]+ : the longest whitespace run up to and including its last newline.
-        if (match == 0 && IsAsciiSpace(c))
-        {
-            size_t j = i;
-            size_t lastNewline = 0;
-            bool hasNewline = false;
-            while (j < n && IsAsciiSpace(static_cast<unsigned char>(text[j])))
-            {
-                if (IsNewline(static_cast<unsigned char>(text[j])))
-                {
-                    lastNewline = j + 1;
-                    hasNewline = true;
-                }
-                ++j;
-            }
-            if (hasNewline)
-            {
-                match = lastNewline - i;
-            }
-        }
-        // 6. \s+(?!\S) : trailing whitespace.
-        if (match == 0 && IsAsciiSpace(c))
-        {
-            size_t j = i;
-            while (j < n && IsAsciiSpace(static_cast<unsigned char>(text[j])))
-            {
-                ++j;
-            }
-            if (j >= n)
-            {
-                match = j - i;
-            }
-        }
-        // 7. \s+
-        if (match == 0 && IsAsciiSpace(c))
-        {
-            match = 1;
-        }
-        if (match == 0)
-        {
-            match = 1;  // Unmatched byte: emit it alone rather than loop forever.
-        }
-        pieces.push_back(text.substr(i, match));
-        i += match;
-    }
-    return pieces;
+    // The split is llama.cpp's, through its vendored regex engine, so the pieces match what its BPE
+    // would merge. `byte_encode = false` returns UTF-8 substrings; ByteEncode applies GPT-2's map.
+    return unicode_regex_split(text, m_regexExprs, false);
 }
 
 std::vector<int32_t> Tokenizer::MergePiece(const std::string& encoded) const
@@ -350,14 +260,53 @@ std::vector<int32_t> Tokenizer::MergePiece(const std::string& encoded) const
     return ids;
 }
 
-std::vector<int32_t> Tokenizer::Encode(const std::string& text) const
+std::vector<int32_t> Tokenizer::Encode(const std::string& text, bool parseSpecial) const
 {
     std::vector<int32_t> ids;
-    for (const std::string& piece : PreTokenize(text))
+    // Text between special tokens is BPE'd as one run; a special token itself is emitted directly.
+    const auto flush = [&](std::string& buffer)
     {
-        const std::vector<int32_t> pieceIds = MergePiece(ByteEncode(piece));
-        ids.insert(ids.end(), pieceIds.begin(), pieceIds.end());
+        if (buffer.empty())
+        {
+            return;
+        }
+        for (const std::string& piece : PreTokenize(buffer))
+        {
+            const std::vector<int32_t> pieceIds = MergePiece(ByteEncode(piece));
+            ids.insert(ids.end(), pieceIds.begin(), pieceIds.end());
+        }
+        buffer.clear();
+    };
+
+    std::string buffer;
+    size_t i = 0;
+    while (i < text.size())
+    {
+        const SpecialToken* match = nullptr;
+        if (parseSpecial)
+        {
+            for (const SpecialToken& special : m_specialTokens)
+            {
+                if (special.text.size() <= text.size() - i && text.compare(i, special.text.size(), special.text) == 0 &&
+                    (match == nullptr || special.text.size() > match->text.size()))
+                {
+                    match = &special;
+                }
+            }
+        }
+        if (match != nullptr)
+        {
+            flush(buffer);
+            ids.push_back(match->id);
+            i += match->text.size();
+        }
+        else
+        {
+            buffer.push_back(text[i]);
+            ++i;
+        }
     }
+    flush(buffer);
     return ids;
 }
 
@@ -368,6 +317,11 @@ std::string Tokenizer::TokenBytes(int32_t id) const
         return {};
     }
     return ByteDecode(m_idToToken[static_cast<size_t>(id)]);
+}
+
+bool Tokenizer::IsSpecial(int32_t id) const
+{
+    return id >= 0 && static_cast<size_t>(id) < m_isSpecial.size() && m_isSpecial[static_cast<size_t>(id)] != 0;
 }
 
 std::string Tokenizer::Decode(const std::vector<int32_t>& ids) const

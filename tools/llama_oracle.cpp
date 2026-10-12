@@ -28,7 +28,12 @@ int main(int argc, char** argv)
         return 2;
     }
 
+    // `--tokenize <text>` prints llama.cpp's own token ids, so the engine's tokenizer can be
+    // compared against the reference directly (any script, not just ASCII).
+    const bool tokenizeMode = std::strcmp(argv[2], "--tokenize") == 0;
+
     std::vector<llama_token> tokens;
+    if (!tokenizeMode)
     {
         std::string field;
         for (const char* cursor = argv[2];; ++cursor)
@@ -51,7 +56,8 @@ int main(int argc, char** argv)
             }
         }
     }
-    if (tokens.empty())
+
+    if (!tokenizeMode && tokens.empty())
     {
         std::fprintf(stderr, "no tokens\n");
         return 2;
@@ -67,6 +73,20 @@ int main(int argc, char** argv)
         return 1;
     }
     const llama_vocab* vocab = llama_model_get_vocab(model);
+
+    if (tokenizeMode)
+    {
+        const char* text = argc > 3 ? argv[3] : "";
+        std::vector<llama_token> ids(std::strlen(text) * 4 + 16);
+        const int n = llama_tokenize(vocab, text, static_cast<int32_t>(std::strlen(text)), ids.data(),
+                                     static_cast<int32_t>(ids.size()), false, true);
+        std::printf("[tokenize]");
+        for (int i = 0; i < n; ++i) std::printf(" %d", ids[i]);
+        std::printf("\n");
+        llama_model_free(model);
+        llama_backend_free();
+        return 0;
+    }
 
     llama_context_params contextParams = llama_context_default_params();
     contextParams.n_ctx = tokens.size() + 1;

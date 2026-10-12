@@ -13,8 +13,11 @@ struct ForwardOptions
 {
     std::vector<int32_t> tokens;  ///< Prompt token ids; used when `prompt` is empty.
     std::string prompt;           ///< Prompt text, tokenized with the model's tokenizer when set.
-    uint32_t nPredict = 32;       ///< Number of tokens to generate.
+    uint32_t nPredict = 32;       ///< Number of tokens to generate per turn.
     SamplerParams sampler;        ///< Greedy by default (`temperature = 0`).
+    bool chat = false;            ///< Frame the prompt with Qwen2's ChatML template.
+    bool interactive = false;     ///< After the first reply, read user turns from stdin.
+    std::string system;           ///< Chat system message; empty uses the Qwen2.5 default.
 };
 
 /// Run the whole Qwen2 model through the graph.

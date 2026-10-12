@@ -393,6 +393,19 @@ int main(int argc, char** argv)
                 {
                     options.sampler.seed = std::stoull(value(i, "--seed"));
                 }
+                else if (arg == "--chat")
+                {
+                    options.chat = true;
+                }
+                else if (arg == "-i" || arg == "--interactive")
+                {
+                    options.chat = true;
+                    options.interactive = true;
+                }
+                else if (arg == "--system")
+                {
+                    options.system = value(i, "--system");
+                }
                 else
                 {
                     std::fprintf(stderr, "unknown --forward option: %s\n", arg.c_str());

@@ -28,6 +28,11 @@ file(GLOB_RECURSE MUYO_LLM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h")
 
+# The Unicode helpers under src/llama/ are vendored verbatim from llama.cpp (src/llama/README.md),
+# so their unused functions are llama.cpp's, not ours; silence the warning for those units only.
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/src/llama/unicode.cpp"
+    PROPERTIES COMPILE_OPTIONS "-Wno-unused-function")
+
 # Sanitizer configuration, mirroring Muyo's. Muyo's flags are directory-scoped to its own
 # targets and do not reach an embedder, so the consumer adds its own for `scripts/sanity.sh
 # sanitize`. Same generator expression, so only CMAKE_BUILD_TYPE=Sanitize turns it on. Both

@@ -45,3 +45,23 @@ else
     echo "verify-forward: FAILED"
     exit 1
 fi
+
+# Tokenizer: compare this repo's Encode against llama.cpp's on several scripts, and on the rendered
+# ChatML prompt (which checks the chat template's framing and the special-token ids at once).
+SYS="You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+CHAT="$(printf '<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\nHi<|im_end|>\n<|im_start|>assistant\n' "$SYS")"
+CASES=("Hello world!" "café résumé" "日本語のテスト" "Emoji: 🚀🎉" "it's don't I'll" "123 456.789" "a=b+c<d>" "$CHAT")
+tokenizer_bad=0
+for text in "${CASES[@]}"; do
+    want="$(cd build && ./llama_oracle "$MODEL" --tokenize "$text" 2>/dev/null | sed 's/^\[tokenize\] //')"
+    got="$(cd build && ./muyo_llm --tokenize "$MODEL" "$text" 2>/dev/null | grep -oP '(?<=-> ).*')"
+    if [ "$want" != "$got" ]; then
+        echo "verify-forward: tokenizer DIFF for [$text]"
+        tokenizer_bad=1
+    fi
+done
+if [ "$tokenizer_bad" = 0 ]; then
+    echo "verify-forward: tokenizer OK (${#CASES[@]} inputs match llama.cpp)"
+else
+    exit 1
+fi

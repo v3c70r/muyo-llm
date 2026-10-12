@@ -92,18 +92,35 @@ $ scripts/verify-forward.sh            # builds a libllama oracle and diffs the 
 verify-forward: OK (8 greedy tokens match llama.cpp)
 ```
 
-Flags: `-p/--prompt <text>` or `--tokens id,id` (the tokenizer is used only for `-p`), `-n`,
-`--temp`, `--top-k`, `--top-p`, `--repeat-penalty`, `--repeat-last-n`, `--seed`. The default is
-greedy, so a run without sampler flags is reproducible. The generated text streams to stdout (a
-UTF-8 character spanning two byte-piece tokens is held back until it completes); diagnostics and
-the token-id summary go to stderr. The prompt path is ASCII (the pre-tokenizer is the ASCII subset
-of Qwen2's, see `src/Tokenizer.h`), but output decoding is byte-exact for any token, so non-ASCII
-replies render correctly.
+Flags: `-p/--prompt <text>` or `--tokens id,id`, `-n`, `--chat`, `-i`, `--system`, and the sampler
+`--temp/--top-k/--top-p/--repeat-penalty/--repeat-last-n/--seed`. The default is greedy, so a run
+without sampler flags is reproducible. The generated text streams to stdout (a UTF-8 character
+spanning two byte-piece tokens is held back until it completes, and special tokens are not printed);
+diagnostics and the token-id summary go to stderr. The context is capped at `K_MAX_SEQ = 2048`.
 
-It is a completion engine, not a chat one: `tokenizer.chat_template` is not applied, and the context
-is capped at `K_MAX_SEQ = 2048`. `tools/reference_qwen2.py` is a numpy reference for the same
-forward, and `MUYO_LOGITS=<file>` / `MUYO_DUMP=<dir>` make the engine write logits and per-layer
-intermediates so they can be compared element by element.
+`--chat` frames the prompt with Qwen2's ChatML template, and `-i` reads further turns from stdin,
+appending each to the KV cache rather than re-prefilling:
+
+```
+$ ./muyo_llm --forward testdata/qwen2.5-0.5b-instruct-fp16.gguf -p "What is the capital of France?" \
+      --chat -n 48 --temp 0.7 --top-p 0.9 --seed 3
+The capital of France is Paris.
+$ printf 'What is 2+2?\nWho are you?\n' | ./muyo_llm --forward testdata/qwen2.5-0.5b-instruct-fp16.gguf \
+      --chat -i -n 48 --temp 0.7 --seed 5
+2+2 is equal to 4.
+I am Qwen, a large language model created by Alibaba Cloud. ...
+```
+
+**Tokenizer.** Byte-level BPE over llama.cpp's pre-tokenizer: the Unicode helpers are vendored
+verbatim from llama.cpp under `src/llama/` (as the shaders are), so the split matches for any script
+and special tokens (`<|im_start|>`) are recognized as units. `scripts/verify-forward.sh` checks the
+token ids against llama.cpp for ASCII, accented Latin, Japanese, emoji, punctuation and a rendered
+ChatML turn, not just the greedy tokens.
+
+Not done: batched prefill (the prompt is still fed one token at a time, so a long prompt is O(P)
+full forwards — `mul_mm` and `flash_attn` are the M6 work). `tools/reference_qwen2.py` is a numpy
+reference for the same forward, and `MUYO_LOGITS=<file>` / `MUYO_DUMP=<dir>` make the engine write
+logits and per-layer intermediates so they can be compared element by element.
 
 ## Build
 

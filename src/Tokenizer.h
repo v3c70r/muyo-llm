@@ -15,11 +15,10 @@ class GgufReader;
 /// byte-to-unicode map (so every byte is a printable code point, and the space byte is `Ġ`), then
 /// apply the vocab's ranked merges, then look each piece up in the vocab.
 ///
-/// **Scope:** the pre-tokenizer implements the Qwen2 pattern over ASCII. `\p{L}` and `\p{N}` are
-/// ASCII letters and digits, and other scripts are not handled - they fall through the
-/// "not space, not letter, not digit" branch and tokenize differently from a real Qwen2 tokenizer.
-/// That is enough to drive an ASCII prompt end to end and to round-trip; it is not a general
-/// tokenizer. Recorded here rather than discovered by a wrong token id later.
+/// **Scope:** the pre-tokenizer is llama.cpp's, called through the vendored `unicode_regex_split`
+/// (`src/llama/`), so it is correct for any UTF-8 script and matches llama.cpp's split exactly. The
+/// two regexes a GGUF's `tokenizer.ggml.pre` can select (`qwen2` and the GPT-2 default) are the
+/// ones this repo's models use; an unknown value falls back to GPT-2.
 class Tokenizer
 {
 public:
@@ -38,10 +37,16 @@ public:
     /// `<|im_end|>` maps to itself through the same table.
     std::string TokenBytes(int32_t id) const;
 
+    /// @return True for a CONTROL or USER_DEFINED token (`<|im_start|>`, `<|im_end|>`). Such a token
+    /// is framing, not text, and llama.cpp's default `token_to_piece` renders it as nothing.
+    bool IsSpecial(int32_t id) const;
+
     /// Tokenize `text`.
-    /// @param text Input text (ASCII is fully supported; other scripts are best-effort).
+    /// @param text Input text (any UTF-8 script).
+    /// @param parseSpecial When true (the default) a vocabulary special token such as `<|im_start|>`
+    ///        is recognized as a unit and emitted as its id, instead of being split by BPE.
     /// @return The token ids.
-    std::vector<int32_t> Encode(const std::string& text) const;
+    std::vector<int32_t> Encode(const std::string& text, bool parseSpecial = true) const;
 
     /// Reconstruct text from token ids.
     /// @param ids Token ids.
@@ -49,9 +54,16 @@ public:
     std::string Decode(const std::vector<int32_t>& ids) const;
 
 private:
+    /// One token the tokenizer emits as a unit and never merges (ChatML's `<|im_start|>`).
+    struct SpecialToken
+    {
+        std::string text;
+        int32_t id = -1;
+    };
+
     /// GPT-2's byte-to-unicode table: printable bytes map to themselves, the rest to 256+n.
     void BuildByteTables();
-    /// Pre-tokenize `text` into the pieces BPE runs on (ASCII subset of the Qwen2 pattern).
+    /// Pre-tokenize `text` into the pieces BPE runs on, with llama.cpp's `unicode_regex_split`.
     std::vector<std::string> PreTokenize(const std::string& text) const;
     /// Byte-encode `piece` into the vocab's unicode representation.
     std::string ByteEncode(const std::string& piece) const;
@@ -62,6 +74,12 @@ private:
 
     std::vector<std::string> m_idToToken;
     std::unordered_map<std::string, int32_t> m_tokenToId;
+    /// The pre-tokenizer regex(es) for this vocabulary, from `tokenizer.ggml.pre`.
+    std::vector<std::string> m_regexExprs;
+    /// Tokens with type CONTROL or USER_DEFINED, matched before BPE when `parseSpecial` is set.
+    std::vector<SpecialToken> m_specialTokens;
+    /// Per-id marker for the same set, for the output path.
+    std::vector<uint8_t> m_isSpecial;
     /// Ranked merges, keyed by `left + '\0' + right`. The NUL separator is safe because a symbol is
     /// a UTF-8 code point and a raw NUL never appears.
     std::unordered_map<std::string, int32_t> m_mergeRank;

@@ -7,10 +7,13 @@
 #include <cstdlib>
 #include <exception>
 #include <fstream>
+#include <iostream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "ChatTemplate.h"
 #include "Gguf.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
@@ -486,7 +489,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         const GgufReader reader(ggufPath);
         const Qwen2Config config = ReadQwen2Config(reader);
         const Tokenizer tokenizer(reader);
-        const std::vector<int32_t> prompt = options.prompt.empty() ? options.tokens : tokenizer.Encode(options.prompt);
+        // In chat mode the prompt is the user's raw text and the ChatML framing is applied later, so
+        // it must not be tokenized as a completion here.
+        const std::vector<int32_t> prompt =
+            options.chat ? std::vector<int32_t>{}
+                         : (options.prompt.empty() ? options.tokens : tokenizer.Encode(options.prompt));
         if (prompt.size() >= K_MAX_SEQ)
         {
             std::fprintf(stderr, "[fail] prompt is %zu tokens, the cache holds %u\n", prompt.size(), K_MAX_SEQ);
@@ -996,24 +1003,16 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         auto* pLogitsResource = GetRenderResourceManager()->GetResource<BufferResource>("logits");
         bool wroteLogits = false;
 
-        std::vector<int32_t> fed = prompt;
-        std::vector<int32_t> generated;
         const int32_t eos = static_cast<int32_t>(reader.UintOr("tokenizer.ggml.eos_token_id", UINT64_MAX));
-        if (fed.empty())
-        {
-            fed.push_back(static_cast<int32_t>(reader.UintOr("tokenizer.ggml.bos_token_id", 0)));
-        }
-        std::fprintf(stderr, "[forward] prompt tokens:");
-        for (int32_t token : fed)
-        {
-            std::fprintf(stderr, " %d", token);
-        }
-        std::fprintf(stderr, "\n");
+        const auto startTime = std::chrono::steady_clock::now();
 
         Sampler sampler(options.sampler);
+        std::vector<int32_t> fed;        // every token in the cache, in order
+        std::vector<int32_t> generated;  // the reply of the current turn
+        std::string pending;             // bytes held back until a UTF-8 character completes
+
         // Streaming output: a token is a byte piece, so a UTF-8 character can span two of them.
         // Hold back an incomplete trailing sequence rather than print a replacement character.
-        std::string pending;
         const auto flushText = [&pending](bool final)
         {
             size_t complete = 0;
@@ -1043,85 +1042,179 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             pending.erase(0, complete);
         };
 
-        const auto startTime = std::chrono::steady_clock::now();
-        for (uint32_t step = 0; step < K_MAX_SEQ && generated.size() < options.nPredict; ++step)
+        // Feed one token at the next cache position and re-record the graph, which refreshes the
+        // logits. False when the cache is full.
+        const auto feedToken = [&](int32_t id) -> bool
         {
-            const int32_t id = fed[step];
-            const int32_t pos = static_cast<int32_t>(step);
-            position = step;
+            if (fed.size() >= K_MAX_SEQ)
+            {
+                return false;
+            }
+            const uint32_t pos = static_cast<uint32_t>(fed.size());
+            position = pos;
             pTokenId->SetData(&id, sizeof(int32_t));
             pRopePos->SetData(&pos, sizeof(int32_t));
             builder.Execute();
-            if (step + 1 < fed.size())
+            fed.push_back(id);
+            return true;
+        };
+
+        const auto sampleNext = [&]()
+        {
+            auto* pLogits = static_cast<float*>(pLogitsResource->Map());
+            const int32_t next = sampler.Sample(pLogits, static_cast<int32_t>(config.vocab), fed);
+            pLogitsResource->Unmap();
+            return next;
+        };
+
+        // First-step dumps, gated by env vars (see README).
+        const auto dumpFirstStep = [&]()
+        {
+            if (const char* dumpDir = std::getenv("MUYO_DUMP"))
             {
-                continue;  // the prompt still has tokens to consume
+                const std::vector<std::pair<std::string, uint32_t>> dumpList = {{"embedding", config.hidden},
+                                                                                {"b0.xn", config.hidden},
+                                                                                {"b0.q", config.queryDim},
+                                                                                {"b0.qr", config.queryDim},
+                                                                                {"b0.kvec", config.kvDim},
+                                                                                {"b0.vvec", config.kvDim},
+                                                                                {"b0.vcache", config.kvDim * K_MAX_SEQ},
+                                                                                {"b0.scores", config.heads * K_MAX_SEQ},
+                                                                                {"b0.probs", config.heads * K_MAX_SEQ},
+                                                                                {"b0.attn_out", config.queryDim},
+                                                                                {"b0.o", config.hidden},
+                                                                                {"b0.x1", config.hidden},
+                                                                                {"b0.gate", config.feedForward},
+                                                                                {"b0.up", config.feedForward},
+                                                                                {"b0.act", config.feedForward},
+                                                                                {"b0.mlp_out", config.hidden},
+                                                                                {"b0.out", config.hidden},
+                                                                                {"final_norm", config.hidden},
+                                                                                {"logits", config.vocab}};
+                for (const auto& [name, count] : dumpList)
+                {
+                    auto* resource = GetRenderResourceManager()->GetResource<BufferResource>(name);
+                    if (resource == nullptr)
+                    {
+                        continue;
+                    }
+                    const auto* values = static_cast<const float*>(resource->Map());
+                    const std::string file = std::string(dumpDir) + "/" + name + ".bin";
+                    std::ofstream out(file, std::ios::binary);
+                    out.write(reinterpret_cast<const char*>(values), sizeof(float) * count);
+                    resource->Unmap();
+                }
+                std::fprintf(stderr, "[forward] dumped intermediates to %s\n", dumpDir);
             }
+            if (const char* dumpPath = std::getenv("MUYO_LOGITS"))
+            {
+                const auto* pLogits = static_cast<const float*>(pLogitsResource->Map());
+                std::ofstream out(dumpPath, std::ios::binary);
+                const int32_t n = static_cast<int32_t>(config.vocab);
+                out.write(reinterpret_cast<const char*>(&n), sizeof(n));
+                out.write(reinterpret_cast<const char*>(pLogits), sizeof(float) * config.vocab);
+                pLogitsResource->Unmap();
+                std::fprintf(stderr, "[forward] wrote logits to %s\n", dumpPath);
+            }
+        };
+
+        // Feed `tokens`, then generate up to `budget` tokens, streaming the text. EOS is fed too, so
+        // a chat turn leaves the cache ending at the assistant's `<|im_end|>` and the next turn can
+        // be appended without re-prefilling.
+        const auto runTurn = [&](const std::vector<int32_t>& tokens, uint32_t budget)
+        {
+            generated.clear();
+            for (int32_t id : tokens)
+            {
+                if (!feedToken(id))
+                {
+                    std::fprintf(stderr, "[forward] the context is full (%u tokens)\n", K_MAX_SEQ);
+                    return;
+                }
+            }
+            for (uint32_t n = 0; n < budget; ++n)
             {
                 if (!wroteLogits)
                 {
-                    if (const char* dumpDir = std::getenv("MUYO_DUMP"))
-                    {
-                        const std::vector<std::pair<std::string, uint32_t>> dumpList = {
-                            {"embedding", config.hidden},
-                            {"b0.xn", config.hidden},
-                            {"b0.q", config.queryDim},
-                            {"b0.qr", config.queryDim},
-                            {"b0.kvec", config.kvDim},
-                            {"b0.vvec", config.kvDim},
-                            {"b0.vcache", config.kvDim * K_MAX_SEQ},
-                            {"b0.scores", config.heads * K_MAX_SEQ},
-                            {"b0.probs", config.heads * K_MAX_SEQ},
-                            {"b0.attn_out", config.queryDim},
-                            {"b0.o", config.hidden},
-                            {"b0.x1", config.hidden},
-                            {"b0.gate", config.feedForward},
-                            {"b0.up", config.feedForward},
-                            {"b0.act", config.feedForward},
-                            {"b0.mlp_out", config.hidden},
-                            {"b0.out", config.hidden},
-                            {"final_norm", config.hidden},
-                            {"logits", config.vocab}};
-                        for (const auto& [name, count] : dumpList)
-                        {
-                            auto* resource = GetRenderResourceManager()->GetResource<BufferResource>(name);
-                            if (resource == nullptr)
-                            {
-                                continue;
-                            }
-                            const auto* values = static_cast<const float*>(resource->Map());
-                            const std::string file = std::string(dumpDir) + "/" + name + ".bin";
-                            std::ofstream out(file, std::ios::binary);
-                            out.write(reinterpret_cast<const char*>(values), sizeof(float) * count);
-                            resource->Unmap();
-                        }
-                        std::fprintf(stderr, "[forward] dumped intermediates to %s\n", dumpDir);
-                    }
-                    if (const char* dumpPath = std::getenv("MUYO_LOGITS"))
-                    {
-                        const auto* pLogits = static_cast<const float*>(pLogitsResource->Map());
-                        std::ofstream out(dumpPath, std::ios::binary);
-                        const int32_t n = static_cast<int32_t>(config.vocab);
-                        out.write(reinterpret_cast<const char*>(&n), sizeof(n));
-                        out.write(reinterpret_cast<const char*>(pLogits), sizeof(float) * config.vocab);
-                        pLogitsResource->Unmap();
-                        std::fprintf(stderr, "[forward] wrote logits of step %u to %s\n", step, dumpPath);
-                    }
+                    dumpFirstStep();
                     wroteLogits = true;
                 }
-                auto* pLogits = static_cast<float*>(pLogitsResource->Map());
-                const int32_t next = sampler.Sample(pLogits, static_cast<int32_t>(config.vocab), fed);
-                pLogitsResource->Unmap();
-
-                fed.push_back(next);
+                const int32_t next = sampleNext();
                 generated.push_back(next);
-                pending += tokenizer.TokenBytes(next);
-                flushText(false);
-                std::fflush(stdout);
+                if (!tokenizer.IsSpecial(next))
+                {
+                    pending += tokenizer.TokenBytes(next);
+                    flushText(false);
+                    std::fflush(stdout);
+                }
+                if (!feedToken(next))
+                {
+                    break;
+                }
                 if (eos != static_cast<int32_t>(UINT64_MAX) && next == eos)
                 {
                     break;
                 }
             }
+        };
+
+        if (options.chat)
+        {
+            const std::string system = options.system.empty() ? chat_template::QWEN2_DEFAULT_SYSTEM : options.system;
+            // With no initial prompt in an interactive session, prime only the system turn and let
+            // the first line from stdin be the first user turn.
+            bool firstUserTurn = true;
+            if (!options.prompt.empty() || !options.interactive)
+            {
+                const std::string user = options.prompt.empty() ? "Hello" : options.prompt;
+                runTurn(tokenizer.Encode(chat_template::Qwen2ChatStart(system, user), true), options.nPredict);
+                firstUserTurn = false;
+            }
+            else
+            {
+                for (int32_t id : tokenizer.Encode(chat_template::Qwen2SystemStart(system), true))
+                {
+                    feedToken(id);
+                }
+            }
+            while (options.interactive)
+            {
+                std::fprintf(stderr, "\n[chat] you> ");
+                std::fflush(stderr);
+                std::string line;
+                if (!std::getline(std::cin, line))
+                {
+                    break;
+                }
+                if (line.empty())
+                {
+                    continue;
+                }
+                if (line == "/exit" || line == "/quit")
+                {
+                    break;
+                }
+                // Every turn after the assistant's `<|im_end|>` starts with a newline.
+                const std::string prefix = firstUserTurn ? "" : "\n";
+                firstUserTurn = false;
+                std::printf("\n");
+                runTurn(tokenizer.Encode(prefix + chat_template::Qwen2UserTurn(line), true), options.nPredict);
+            }
+        }
+        else
+        {
+            std::vector<int32_t> promptTokens = prompt;
+            if (promptTokens.empty())
+            {
+                promptTokens.push_back(static_cast<int32_t>(reader.UintOr("tokenizer.ggml.bos_token_id", 0)));
+            }
+            std::fprintf(stderr, "[forward] prompt tokens:");
+            for (int32_t token : promptTokens)
+            {
+                std::fprintf(stderr, " %d", token);
+            }
+            std::fprintf(stderr, "\n");
+            runTurn(promptTokens, options.nPredict);
         }
 
         flushText(true);

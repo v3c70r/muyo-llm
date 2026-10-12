@@ -54,7 +54,6 @@ int RunEmbedding(const std::string& path, int32_t token)
         std::fprintf(stderr, "[fail] token_embd.weight is type %u, expected F32 or F16\n", tensor->type);
         return 1;
     }
-    const uint32_t elementSize = isF16 ? 2 : 4;
 
     // GGUF order: fastest-varying dimension first, so dims = [embd, vocab] and the raw bytes are
     // already one token vector after another.
