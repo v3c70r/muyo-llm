@@ -236,22 +236,24 @@ Columns past the current position are zero in `V_T`, so they contribute nothing 
 probabilities are. This is a llama.cpp contract, not a Muyo one; it is recorded because a consumer
 that reshapes a matrix into the shader will hit it, and because it constrains the cache layout.
 
-## F12 — `copy.comp`'s fastdiv magic divides by one incorrectly
+## F12 — reproducing `init_pushconst_fastdiv` for `copy.comp`
 
-**C, llama.cpp-side, worked around.** `generic_unary_head.glsl` decomposes the linear index for
-`src0_idx`/`dst_idx` with `fastdiv(idx, mp, L)`. For a dimension of 1 the multiplier is `mp = 1`
-and the shift is `L = 0`, so `fastdiv(idx, 1, 0) = idx` rather than `0`, and the outer indices of a
-1-D operand become `idx` — every index past the first then underflows. llama.cpp avoids this by
-routing contiguous 1-D copies through `contig_copy.comp` and by only using `copy.comp` on operands
-whose dims are all `> 1`.
+**C, consumer-side, fixed.** `generic_unary_head.glsl` decomposes the linear index for
+`src0_idx`/`dst_idx` with `fastdiv(idx, mp, L)`. The multipliers are built by
+`init_pushconst_fastdiv(vk_op_unary_push_constants&)`, which divides by the products **including the
+innermost dimension**: `ne02*ne01*ne00`, `ne01*ne00`, `ne00` (and `ne12*ne11*ne10`, …). The first
+M3b attempt used the products *excluding* the innermost dimension (`ne03*ne02*ne01`, …); for a 1-D
+source whose innermost dimension is the only non-1 one, that makes the divisor `1`, and
+`fastdiv(idx, 1, 0) = (mulhi(idx,1) + idx) >> 0 = idx`, so the outer indices take the value `idx` and
+every index past the first underflows. With the divisors copied correctly from llama.cpp there is no
+problem for any non-empty tensor.
 
-For M3b's transposing value append that means the shader's source and destination dims are given
-deliberate sizes `> 1` (the destination is described as `[kv_dim][max_seq][1][1]`, the source as
-`[kv_dim][1][1][1]` with the shift amounts taken from the products *including* the innermost
-dimension, exactly as `init_pushconst_fastdiv(vk_op_unary_push_constants&)` builds them). With the
-correct multipliers the transposing scatter works without any descriptor offset: the destination
-base rides in `misalign_offsets`' low 16 bits (`get_doffset()`), which holds a cache position up to
-65535.
+This is recorded as a correction rather than a llama.cpp defect: the contract is "the magic values
+are the cumulative products from the innermost dimension outward", and getting it wrong produces a
+first-element-only write, which looks like a binding or barrier bug rather than an arithmetic one.
+The transposing value append works with the correct multipliers and no descriptor offset — the
+destination base rides in `misalign_offsets`' low 16 bits (`get_doffset()`), enough for a cache
+position up to 65535.
 
 ## M3b — the KV-cache append, resolved without a new primitive
 
