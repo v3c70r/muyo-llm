@@ -145,6 +145,14 @@ muyo_llm_llama_shader(argmax_f32 argmax.comp
     "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_head.glsl")
 
 # soft_max_f32: the attention-weights normalization, without an ALiBi mask (KY = 0).
+# cpy_f32_f32: the KV-cache append. The copy shader's destination index is computed from the
+# destination's own ne/nb, so a transposing column append is a stride choice, and the row rides in
+# `misalign_offsets` (16 bits of element offset - wide enough for a cache position).
+muyo_llm_llama_shader(cpy_f32_f32 copy.comp
+    "A_TYPE=float;D_TYPE=float"
+    "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/generic_unary_head.glsl"
+    "${LLAMA_SHADER_DIR}/utils.glsl")
+
 muyo_llm_llama_shader(soft_max_f32 soft_max.comp
     "A_TYPE=float;B_TYPE=float;D_TYPE=float;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2"
     "${LLAMA_SHADER_DIR}/types.glsl")

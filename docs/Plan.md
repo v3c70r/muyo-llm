@@ -224,6 +224,16 @@ and dispatches.
 **Acceptance:** single-layer hidden state matches the reference within tolerance, with the
 comparison command recorded.
 
+**M3a — the layer, no cache writes (`--layer`, done).** The fourteen nodes run end to end and match
+`ReferenceLayer`; the layer reads a host-provided transposed V cache and omits the K/V projections,
+because the append itself is M3b.
+
+**M3b — the append (`--kvcache`, done).** The key of the current token is roped into `KeyCache` at
+`d_offset = position * kv_dim`, and the value is scattered into `ValueCacheT` as a column through
+`copy.comp`'s `dst_idx`/`misalign_offsets` (Finding F12). Attention then runs over the keys written
+so far; the softmax's `KX` and the GEMV's dispatch grow with the position. Both positions of a
+two-token cache match the CPU reference. This needed no new Muyo primitive — see Findings F9/M3b.
+
 ### M4 — Full model and sampling
 
 - N layers, final norm, LM head, `argmax` greedy sampling.

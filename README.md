@@ -25,7 +25,7 @@ $ cd build && ./muyo_llm --smoke
 [smoke] OK: 1024 elements written by the compute node and verified on the host
 ```
 
-**M1 in progress.** llama.cpp's shaders run through the graph, each checked against a CPU
+**M1 complete.** llama.cpp's shaders run through the graph, each checked against a CPU
 reference: `add.comp` (`C = A + B`), `mul_mat_vec.comp` (decode GEMV, F16 weights), `rms_norm.comp`,
 `rope_neox.comp`, `swiglu.comp`, `get_rows.comp` (embedding lookup) and `argmax.comp` (greedy
 sampling). `mul_mm.comp` compiles with its 74 specialization constants; correct GEMM dispatch is M2
@@ -39,7 +39,7 @@ loads a model's token embedding and gathers one row through the graph, verified 
 tensors of qwen2.5-0.5b-instruct-fp16, with their shapes and dtypes - and prints the config the
 forward pass needs. The tokenizer's pre-tokenizer covers ASCII only.
 
-The F16 target model is downloaded for M4 (the attention cache append, M3b, waits on Muyo #81):
+The F16 target model is downloaded for M4:
 
 ```
 curl -sL https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf \
@@ -63,7 +63,19 @@ $ ./muyo_llm --rmsnorm
 [rmsnorm] OK: llama.cpp rms_norm over 8x512 matches the CPU reference
 $ ./muyo_llm --rope
 [rope] OK: llama.cpp rope_neox over 8 channels matches the CPU reference
+$ ./muyo_llm --attention
+[attention] OK: QK^T -> softmax -> V matches the CPU reference
+$ ./muyo_llm --layer
+[layer] OK: the 14-node transformer layer matches the CPU reference
+$ ./muyo_llm --kvcache
+[kvcache] OK: token 1 at position 1 over 2 cached keys matches the CPU reference
 ```
+
+**M3 complete.** The fourteen-node transformer layer runs end to end (`--layer`), and the KV-cache
+append (`--kvcache`) writes the key and the transposed value of each token into a persistent cache
+at the current position, then attends over the keys written so far. Both run through the graph with
+no new Muyo primitive — the key rides in `rope_neox`'s `d_offset` and the value column rides in
+`copy.comp`'s `misalign_offsets` (see `docs/Findings.md`).
 
 ## Build
 
@@ -90,6 +102,9 @@ The gaps that blocked M0 and M1 in the plan have closed:
 - **Cooperative-matrix enablement** — [Muyo #63](https://github.com/v3c70r/Muyo/issues/63), PR #71.
   On this machine it is available through **AMDVLK** (11 property sets, `F16/F16->F32` 16x16x16), not
   through the default RADV driver; AMDVLK is opt-in via `VK_DRIVER_FILES`.
+- **Static resource byte range** — [Muyo #81](https://github.com/v3c70r/Muyo/issues/81) landed as
+  [PR #82](https://github.com/v3c70r/Muyo/pull/82) (`a8c4b55`): a resource use may declare a byte
+  `offset`/`size`. This is the weight-slicing primitive; the KV append turned out not to need it.
 
 Open, and not blocking M0/M1: reading the cooperative-matrix property sets can crash under one
 driver + validation-layer pairing ([Muyo #72](https://github.com/v3c70r/Muyo/issues/72)), and the

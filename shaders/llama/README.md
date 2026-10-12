@@ -31,3 +31,5 @@ side of that contract lives in `src/LlamaContracts.h` and the per-shader compile
 | `mul_mat_vec_base.glsl` | Its push-constant block, reductions and offsets. |
 | `mul_mat_vec_iface.glsl` | Its bindings and operand types. |
 | `dequant_funcs.glsl` | Included by GEMV; the non-quant F32/F16 paths live here too. |
+| `copy.comp` | Strided/transposing copy; the KV-cache value append (M3b). |
+| `generic_unary_head.glsl` | `copy.comp`'s push-constant block and index helpers. |

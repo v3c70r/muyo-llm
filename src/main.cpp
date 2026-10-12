@@ -5,6 +5,7 @@
 // and a host-side check that reads the pattern back. Everything after this reuses the same
 // skeleton, so the point is not the pattern, it is that the whole path runs without a surface.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -18,6 +19,7 @@
 #include "GetRows.h"
 #include "GgufSummary.h"
 #include "HeadlessContext.h"
+#include "KvCache.h"
 #include "MatVec.h"
 #include "ModelSummary.h"
 #include "RenderGraph/RenderGraphBuilder.h"
@@ -238,15 +240,17 @@ int main(int argc, char** argv)
             return 1;
         }
     }
-    if (mode != "--smoke" && mode != "--add" && mode != "--matvec" && mode != "--rmsnorm" && mode != "--rope" &&
-        mode != "--swiglu" && mode != "--getrows" && mode != "--argmax" && mode != "--softmax" &&
-        mode != "--attention" && mode != "--layer")
+    const std::vector<std::string> modes = {"--smoke",   "--add",       "--matvec",  "--rmsnorm",
+                                            "--rope",    "--swiglu",    "--getrows", "--argmax",
+                                            "--softmax", "--attention", "--kvcache", "--layer"};
+    if (std::find(modes.begin(), modes.end(), mode) == modes.end())
     {
-        std::fprintf(
-            stderr,
-            "usage: %s "
-            "[--smoke|--add|--matvec|--rmsnorm|--rope|--swiglu|--getrows|--argmax|--softmax|--attention|--layer]\n",
-            argv[0]);
+        std::fprintf(stderr, "usage: %s", argv[0]);
+        for (const std::string& name : modes)
+        {
+            std::fprintf(stderr, " %s", name.c_str());
+        }
+        std::fprintf(stderr, "\n");
         return 2;
     }
 
@@ -290,6 +294,10 @@ int main(int argc, char** argv)
         if (mode == "--attention")
         {
             return muyo_llm::RunAttention();
+        }
+        if (mode == "--kvcache")
+        {
+            return muyo_llm::RunKvCache();
         }
         if (mode == "--layer")
         {

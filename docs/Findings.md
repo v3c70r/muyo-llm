@@ -220,3 +220,59 @@ Checked against llama.cpp rather than guessed, because muyo-llm's model is llama
   would not use it.
 
 Written into Muyo #81 as a comment rather than a second issue.
+
+## F11 — `mul_mat_vec` hardcodes the A row stride to `ncols`
+
+**C, llama.cpp-side, worked around.** The vendored `mul_mat_vec.comp` computes the A row base as
+`ibi = first_row * p.ncols` — it never reads `p.stride_a` for the *row* stride (it is used elsewhere).
+A is therefore assumed row-contiguous with row stride equal to the reduction length. The
+`--matvec` case never exposed it because `strideA` and `ncols` were the same value.
+
+It surfaced in M3b: the value cache is stored transposed (`V_T[channel][position]`, row stride
+`max_seq`) so `V_T · probs` is an ordinary GEMV, but the reduction must span the keys written so
+far (`ncols = position + 1`) — which is not the row stride. The fix is to run the reduction over
+the **whole** cache row (`ncols = max_seq`) and zero the unwritten columns once at allocation.
+Columns past the current position are zero in `V_T`, so they contribute nothing no matter what the
+probabilities are. This is a llama.cpp contract, not a Muyo one; it is recorded because a consumer
+that reshapes a matrix into the shader will hit it, and because it constrains the cache layout.
+
+## F12 — `copy.comp`'s fastdiv magic divides by one incorrectly
+
+**C, llama.cpp-side, worked around.** `generic_unary_head.glsl` decomposes the linear index for
+`src0_idx`/`dst_idx` with `fastdiv(idx, mp, L)`. For a dimension of 1 the multiplier is `mp = 1`
+and the shift is `L = 0`, so `fastdiv(idx, 1, 0) = idx` rather than `0`, and the outer indices of a
+1-D operand become `idx` — every index past the first then underflows. llama.cpp avoids this by
+routing contiguous 1-D copies through `contig_copy.comp` and by only using `copy.comp` on operands
+whose dims are all `> 1`.
+
+For M3b's transposing value append that means the shader's source and destination dims are given
+deliberate sizes `> 1` (the destination is described as `[kv_dim][max_seq][1][1]`, the source as
+`[kv_dim][1][1][1]` with the shift amounts taken from the products *including* the innermost
+dimension, exactly as `init_pushconst_fastdiv(vk_op_unary_push_constants&)` builds them). With the
+correct multipliers the transposing scatter works without any descriptor offset: the destination
+base rides in `misalign_offsets`' low 16 bits (`get_doffset()`), which holds a cache position up to
+65535.
+
+## M3b — the KV-cache append, resolved without a new primitive
+
+The blocker recorded in F9 is lifted, and not by the part of it we expected. Muyo #81 landed as
+commit `a8c4b55` ("A resource use can declare a byte range of a buffer…"): a resource use may carry
+a **static** byte `offset`/`size` that is written into `VkDescriptorBufferInfo::offset`/`::range`,
+resolved at record time. That is the weight-slicing primitive (an imported slice, a shared buffer),
+and the PR deliberately leaves the "offset only known per execution" base case open.
+
+The append itself did not need it. Reading the shaders first, both halves of the KV write have an
+expression that already exists in llama.cpp's set:
+
+- **K append.** `rope_neox` has a full 32-bit `d_offset` push constant, so the key of the current
+  token is roped straight into `KeyCache` at `d_offset = position * kv_dim`.
+- **V append.** `copy.comp` scatters through `dst_idx`, whose base is `get_doffset()` — 16 bits of
+  element offset from `misalign_offsets`. Setting the destination strides so the channel stride is
+  `seq` and the position stride is 1 turns a row write into a transposed column write, with the
+  position as the base.
+
+Both work at `--kvcache` over a growing cache of two positions and match a CPU reference. The
+lesson for the assessment: the missing resource-range expression was real for *slices*, but the
+first thing a decode engine needs — write this row into that arena at this offset — was already
+expressible through per-dispatch push constants, because llama.cpp's shaders were built to be
+driven that way. The graph did not have to grow an API for it.
