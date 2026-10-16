@@ -111,7 +111,7 @@ int RunElementwiseAdd()
                                   .stride = sizeof(float),
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("MatrixA", floatBuffer(K_ELEMENT_COUNT, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("MatrixB", floatBuffer(K_ELEMENT_COUNT, storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));

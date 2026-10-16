@@ -64,7 +64,7 @@ int RunGetRows()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("EmbeddingWeight", buffer(K_VOCAB_SIZE * K_EMBEDDING_DIM, sizeof(float),
                                                   storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));

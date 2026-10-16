@@ -72,7 +72,7 @@ int RunRope()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("RopeInput",
                         buffer(K_ROWS * K_N_DIMS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));

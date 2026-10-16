@@ -519,7 +519,12 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                       .stride = stride,
                                       .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       .memoryProperties = VMA_MEMORY_USAGE_GPU_ONLY,
-                                      .lifetime = ResourceLifetime::Transient};
+                                      // Host-uploaded once and read by a node for the life of the graph. A transient
+                                      // may share a block with another resource whose live range does not overlap
+                                      // (#16), and the host upload is not part of any live range, so the content would
+                                      // not survive: this is the case `Persistent` (which still goes through the
+                                      // resource manager) exists for.
+                                      .lifetime = ResourceLifetime::Persistent};
         };
         const auto scratchDesc = [storage, hostVisible](uint64_t count, uint64_t stride, ResourceLifetime lifetime)
         {
@@ -528,7 +533,10 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                 .stride = stride,
                 .usage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                 .memoryProperties = hostVisible ? VMA_MEMORY_USAGE_CPU_TO_GPU : VMA_MEMORY_USAGE_GPU_ONLY,
-                .lifetime = lifetime};
+                // Under MUYO_DUMP the intermediates are mapped after Execute() to write them out, and
+                // a graph-owned transient's mapping is only valid inside the node whose use declared
+                // it (#16, executed by Muyo `27eb53e`), so the debug path makes them Persistent.
+                .lifetime = hostVisible ? ResourceLifetime::Persistent : lifetime};
         };
         const auto hostDesc = [storage](uint64_t count, uint64_t stride)
         {
@@ -536,7 +544,8 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                       .stride = stride,
                                       .usage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                      .lifetime = ResourceLifetime::Transient};
+                                      // Set/read from the host around each Execute().
+                                      .lifetime = ResourceLifetime::Persistent};
         };
 
         // Weight resources, remembered so they can be uploaded after Build().
@@ -582,9 +591,13 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         builder.AddResource("next_token", hostDesc(1, sizeof(int32_t)));
         builder.AddResource("rope_pos", hostDesc(1, sizeof(int32_t)));
         builder.AddResource("partial", hostDesc(2, sizeof(float)));
-        builder.AddResource("rope_scratch", scratchDesc(4, sizeof(float), ResourceLifetime::Transient));
-        builder.AddResource("softmax_mask", scratchDesc(K_MAX_SEQ, sizeof(float), ResourceLifetime::Transient));
-        builder.AddResource("softmax_sinks", scratchDesc(1, sizeof(float), ResourceLifetime::Transient));
+        // Bound at the rope/softmax shaders' declared-but-unused bindings (freq factors, set-rows,
+        // the additive mask, attention sinks). Nothing writes them and the shaders do not read them,
+        // but the descriptors must exist, and the lifetime rule (#16) rejects a transient read with
+        // no writer - so they are Persistent, not transient scratch.
+        builder.AddResource("rope_scratch", scratchDesc(4, sizeof(float), ResourceLifetime::Persistent));
+        builder.AddResource("softmax_mask", scratchDesc(K_MAX_SEQ, sizeof(float), ResourceLifetime::Persistent));
+        builder.AddResource("softmax_sinks", scratchDesc(1, sizeof(float), ResourceLifetime::Persistent));
 
         // Per-layer caches and intermediates.
         for (uint32_t layer = 0; layer < config.layers; ++layer)
@@ -603,8 +616,12 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                 scratchDesc(config.queryDim, sizeof(float), ResourceLifetime::Transient));
             builder.AddResource(LayerName(layer, "qr"),
                                 scratchDesc(config.queryDim, sizeof(float), ResourceLifetime::Transient));
+            // Persistent, unlike the other intermediates: the tail past the current position holds
+            // the -1e30 mask written once at setup, and the score GEMV only ever writes rows up to
+            // the position. A transient's block can be reused between executions, which would leave
+            // that tail as another resource's bytes and let it win the softmax maximum.
             builder.AddResource(LayerName(layer, "scores"), scratchDesc(static_cast<uint64_t>(config.heads) * K_MAX_SEQ,
-                                                                        sizeof(float), ResourceLifetime::Transient));
+                                                                        sizeof(float), ResourceLifetime::Persistent));
             builder.AddResource(LayerName(layer, "probs"), scratchDesc(static_cast<uint64_t>(config.heads) * K_MAX_SEQ,
                                                                        sizeof(float), ResourceLifetime::Transient));
             builder.AddResource(LayerName(layer, "attn_out"),
@@ -970,6 +987,16 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
 
         std::fprintf(stderr, "[graph] %zu nodes, %zu weight tensors\n", builder.GetExecutionOrder().size(),
                      weightUploads.size());
+        {
+            // #16's aliasing, measured: the transients this graph keeps Transient are the per-layer
+            // intermediates, and their live ranges end within a layer, so the planner is expected to
+            // pack them into fewer bytes than one resource each.
+            const Muyo::RenderGraph::TransientMemoryPlan& plan = builder.GetTransientMemoryPlan();
+            std::fprintf(stderr, "[graph] transients: %llu bytes reserved for %llu individual (%zu slots, %s)\n",
+                         static_cast<unsigned long long>(plan.reservedBytes),
+                         static_cast<unsigned long long>(plan.individualBytes), plan.SlotCount(),
+                         plan.SharesMemory() ? "sharing" : "no sharing");
+        }
 
         // Upload. The weights are GPU-only, so SetData stages and copies each one.
         for (const auto& [name, tensor] : weightUploads)

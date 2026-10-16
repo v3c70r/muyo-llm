@@ -294,7 +294,7 @@ int RunTransformerLayer()
                                   .stride = sizeof(float),
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     const auto addInput = [&](const char* name, uint32_t count)
     { builder.AddResource(name, buffer(count, inputUsage)); };
@@ -315,7 +315,7 @@ int RunTransformerLayer()
                                                             .stride = sizeof(int32_t),
                                                             .usage = inputUsage,
                                                             .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                                            .lifetime = ResourceLifetime::Transient});
+                                                            .lifetime = ResourceLifetime::Persistent});
 
     addOutput("Xn", K_HIDDEN);
     addOutput("Q", K_HIDDEN);

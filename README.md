@@ -139,18 +139,24 @@ ASan/UBSan.
 
 ## Upstream state
 
-**Validated against Muyo `fe40dd3`** ("Versioning policy: the library publishes, first-party
-consumers are named"). Rebuilt from clean and re-ran `scripts/sanity.sh` (all 12 modes, validation on)
-and `scripts/verify-forward.sh` (greedy tokens + token ids vs llama.cpp) with no compile error, no
+**Validated against Muyo `e71f610`** ("helloVulkanRG: recreate the swapchain when the window size
+changes"). Rebuilt from clean and re-ran `scripts/sanity.sh` (all 12 modes, validation on) and
+`scripts/verify-forward.sh` (greedy tokens + token ids vs llama.cpp) with no compile error, no
 deprecation warning and no named runtime failure.
 
-Since the previously recorded pin `a8c4b55` (PR #82) the only code change upstream is `0294326`
-("The graph is given its services rather than looking them up", the injection slice of #53): the
-graph now takes a `RenderGraphServices{device, resourceManager, descriptorManager}` by construction
-and no longer looks the globals up itself, and `RenderGraphNodeContext` no longer carries a
-`MeshResourceManager&`. This repo was switched to the services constructor in the same pass
-(`src/GraphServices.h`), which is what Muyo's #53 commit says flips the `injected, not global` row
-in its `docs/Consumers.md` from *gap* to *holds* for this consumer.
+Since the previously recorded pin `fe40dd3`, upstream landed #16's transient aliasing (`36d8ab2` …
+`9ef01ac`, with lifetime enforcement in `27eb53e`), the descriptor work (#107/#108/#109), `#55`'s
+`Build()` diagnostics (`347eb11`), the lavapipe CI gate (#22), and the renderer's present path
+(#110/#111/#112). The one that reached this consumer is **#16**: a graph-owned transient is no
+longer a resource-manager resource (`ResolveResource` is the lookup) and its content is valid only
+from its first write within one execution, so every resource whose content comes from the host or is
+read back by the host is now `Persistent`. The finding, and the evidence that the aliasing works on
+the real workload, is `docs/Findings.md` F14.
+
+The previous pin, `fe40dd3`, added the injected graph services (`0294326`, the injection slice of
+#53): this repo switched to the services constructor in the same pass (`src/GraphServices.h`), which
+is the switch that flips the `injected, not global` row in Muyo's `docs/Consumers.md` from *gap* to
+*holds* ([PR #89](https://github.com/v3c70r/Muyo/pull/89)).
 
 The gaps that blocked M0 and M1 in the plan have closed:
 

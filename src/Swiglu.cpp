@@ -75,7 +75,7 @@ int RunSwiglu()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("GluGate", buffer(K_ELEMENT_COUNT, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("GluUp", buffer(K_ELEMENT_COUNT, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));

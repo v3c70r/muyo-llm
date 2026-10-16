@@ -63,7 +63,7 @@ int RunSoftMax()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("Scores", buffer(K_COLUMNS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     // Bindings 1 and 2 are declared unconditionally; they are read only for a mask (KY > 0) or

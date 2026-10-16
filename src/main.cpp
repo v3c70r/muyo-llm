@@ -103,7 +103,7 @@ int RunSmoke()
                                                           .stride = sizeof(uint32_t),
                                                           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                                           .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                                          .lifetime = ResourceLifetime::Transient});
+                                                          .lifetime = ResourceLifetime::Persistent});
 
     RenderGraphNodeCreateInfo fillPass = {
         .nodeName = "SmokeFill",

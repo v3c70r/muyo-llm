@@ -90,17 +90,17 @@ int RunEmbedding(const std::string& path, int32_t token)
                                                              .stride = sizeof(float),
                                                              .usage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                              .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                                             .lifetime = ResourceLifetime::Transient});
+                                                             .lifetime = ResourceLifetime::Persistent});
     builder.AddResource("TokenIndex", BufferResourceDesc{.count = 1,
                                                          .stride = sizeof(int32_t),
                                                          .usage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                          .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                                         .lifetime = ResourceLifetime::Transient});
+                                                         .lifetime = ResourceLifetime::Persistent});
     builder.AddResource("TokenVector", BufferResourceDesc{.count = embeddingDim,
                                                           .stride = sizeof(float),
                                                           .usage = storage,
                                                           .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                                          .lifetime = ResourceLifetime::Transient});
+                                                          .lifetime = ResourceLifetime::Persistent});
 
     const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
     const auto use = [&binding](const char* handle, ResourceIOType io, uint32_t index)

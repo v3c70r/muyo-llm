@@ -122,19 +122,19 @@ int RunKvCache()
                         buffer(K_KV_DIM * K_MAX_SEQ, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                ResourceLifetime::Persistent));
     builder.AddResource("KeyVector", buffer(K_KV_DIM, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                            ResourceLifetime::Transient));
+                                            ResourceLifetime::Persistent));
     builder.AddResource("ValueVector", buffer(K_KV_DIM, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                              ResourceLifetime::Transient));
+                                              ResourceLifetime::Persistent));
     builder.AddResource("Query", buffer(K_KV_DIM, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                         ResourceLifetime::Persistent));
-    builder.AddResource("Scores", buffer(K_MAX_SEQ, sizeof(float), storage, ResourceLifetime::Transient));
-    builder.AddResource("Probs", buffer(K_MAX_SEQ, sizeof(float), storage, ResourceLifetime::Transient));
-    builder.AddResource("AttnOut", buffer(K_KV_DIM, sizeof(float), storage, ResourceLifetime::Transient));
-    builder.AddResource("SoftMaxMask", buffer(K_MAX_SEQ, sizeof(float), storage, ResourceLifetime::Transient));
-    builder.AddResource("SoftMaxSinks", buffer(1, sizeof(float), storage, ResourceLifetime::Transient));
-    builder.AddResource("CopyScratch", buffer(K_KV_DIM, sizeof(float), storage, ResourceLifetime::Transient));
+    builder.AddResource("Scores", buffer(K_MAX_SEQ, sizeof(float), storage, ResourceLifetime::Persistent));
+    builder.AddResource("Probs", buffer(K_MAX_SEQ, sizeof(float), storage, ResourceLifetime::Persistent));
+    builder.AddResource("AttnOut", buffer(K_KV_DIM, sizeof(float), storage, ResourceLifetime::Persistent));
+    builder.AddResource("SoftMaxMask", buffer(K_MAX_SEQ, sizeof(float), storage, ResourceLifetime::Persistent));
+    builder.AddResource("SoftMaxSinks", buffer(1, sizeof(float), storage, ResourceLifetime::Persistent));
+    builder.AddResource("CopyScratch", buffer(K_KV_DIM, sizeof(float), storage, ResourceLifetime::Persistent));
     builder.AddResource("RopePositions", buffer(1, sizeof(int32_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                ResourceLifetime::Transient));
+                                                ResourceLifetime::Persistent));
 
     const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
     const auto use = [&binding](const char* handle, ResourceIOType io, uint32_t index)

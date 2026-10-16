@@ -88,7 +88,7 @@ int RunMatVec()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("WeightsA",
                         buffer(K_ROWS * K_COLS, sizeof(uint16_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));

@@ -64,7 +64,7 @@ int RunArgmax()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("Logits", buffer(K_LOGIT_COUNT, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("TokenIndex", buffer(1, sizeof(int32_t), storage));

@@ -294,6 +294,46 @@ Related: Muyo inserts no barrier between the last node and a host `Map()`, so th
 with its own compute-to-host `VkMemoryBarrier2` (Finding F4) — the only place this model has to
 reach past the graph API.
 
+## F14 — #16's aliasing makes host-touched resources require `Persistent`
+
+**A, breaking, adapted.** Muyo #16's aliasing half (`36d8ab2`, `d87c2b2`, `b60220f`, `9ef01ac`) plus
+its lifetime enforcement (`27eb53e`) changed what a graph-owned `Transient` buffer is:
+
+- It is no longer a resource-manager resource. `GetResource<BufferResource>(name)` returns null; the
+  graph's own lookup is `RenderGraphBuilder::ResolveResource` (graph-owned → imported → manager).
+- Its content is valid only from its first write **within one execution**. A transient with no writer
+  is rejected by name at `Execute()`; a host mapping must not outlive the node whose use declared the
+  resource.
+- Two transients whose live ranges do not overlap now share one block, so memory is reused between
+  them.
+
+Each of the three hit this consumer, and the failure that named the node and the resource was the
+useful one:
+
+- The smoke graph's output stopped being allocated at all (`[fail] the graph did not allocate
+  SmokeValues`) because it is read back on the host after `Execute()`.
+- The 436-node model's weights, uploaded once by the host and read by a node much later, would have
+  been overwritten by an aliased neighbour **without any error** — an upload is not part of a live
+  range, so the planner cannot see it. This is the silent one, and it is why the rule below is not
+  optional.
+- `Node 'b0.k_rope' reads transient resource 'rope_scratch' with nothing writing it first` — the rope
+  shader's declared-but-unused bindings (frequency factors, set-rows) are read-only and never written.
+
+The rule this leaves: **a resource whose content comes from the host, or is read back by the host,
+must be `Persistent` (or imported); only GPU-produced, GPU-consumed intermediates may be `Transient`.**
+This is what Muyo's `b60220f` means by "`Persistent` lifetimes still go through the manager". Applied
+here: weights, KV caches, the pre-masked `scores`, the unused dummy bindings, the logits and the
+per-step I/O are `Persistent`; the per-layer intermediates stay `Transient`.
+
+**Evidence that the aliasing works on a real workload.** With the fix, the model's planner reports
+`transients: 157184 bytes reserved for 4959232 individual (4 slots, sharing)` — the per-layer
+intermediates pack into 4 slots, about 31x less memory — and the greedy tokens still match llama.cpp
+exactly, so the reused bytes are not leaking into the result.
+
+Upstream note: `docs/Consumers.md` still lists "Graph-managed transients have a defined lifetime and
+aliasing policy" as a **gap (#16)** even though the aliasing landed. This run is the consumer
+exercising it; the row is Muyo's to flip.
+
 ## M3b — the KV-cache append, resolved without a new primitive
 
 The blocker recorded in F9 is lifted, and not by the part of it we expected. Muyo #81 landed as

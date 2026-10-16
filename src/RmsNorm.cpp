@@ -80,7 +80,7 @@ int RunRmsNorm()
                                   .stride = stride,
                                   .usage = usage,
                                   .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
-                                  .lifetime = ResourceLifetime::Transient};
+                                  .lifetime = ResourceLifetime::Persistent};
     };
     builder.AddResource("RmsInput", buffer(K_ROWS * K_COLS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("RmsWeight", buffer(K_COLS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
