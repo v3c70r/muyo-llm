@@ -332,7 +332,9 @@ exactly, so the reused bytes are not leaking into the result.
 
 Upstream note: `docs/Consumers.md` still lists "Graph-managed transients have a defined lifetime and
 aliasing policy" as a **gap (#16)** even though the aliasing landed. This run is the consumer
-exercising it; the row is Muyo's to flip.
+exercising it, and the row flip is reported as Muyo
+[PR #114](https://github.com/v3c70r/Muyo/pull/114) (with #16 left to close alongside #40 if the
+review agrees that criterion 3's remaining in-flight\ >1 scope is #40's).
 
 ## M3b — the KV-cache append, resolved without a new primitive
 
