@@ -2,7 +2,9 @@
 
 Generated from the node and dependency declarations before `Build()` by
 `MUYO_RG_DOT=<path> ./muyo_llm --forward <gguf> -p hi` (see `docs/graph/README.md`).
-GitHub renders the Mermaid below natively.
+The diagram syntax is Muyo's `RenderGraph::ToDot`/`ToMermaid`; this repo only projects the
+declared nodes and edges into the `TraceGraph` topology they take. GitHub renders the
+Mermaid below natively.
 
 ## Overview
 
@@ -11,61 +13,61 @@ collapses. `embed → layer 0 … layer 23 → final_norm → lm_head → argmax
 
 ```mermaid
 flowchart LR
-  b0["layer 0"]
-  b1["layer 1"]
-  b2["layer 2"]
-  b3["layer 3"]
-  b4["layer 4"]
-  b5["layer 5"]
-  b6["layer 6"]
-  b7["layer 7"]
-  b8["layer 8"]
-  b9["layer 9"]
-  b10["layer 10"]
-  b11["layer 11"]
-  b12["layer 12"]
-  b13["layer 13"]
-  b14["layer 14"]
-  b15["layer 15"]
-  b16["layer 16"]
-  b17["layer 17"]
-  b18["layer 18"]
-  b19["layer 19"]
-  b20["layer 20"]
-  b21["layer 21"]
-  b22["layer 22"]
-  b23["layer 23"]
-  embed["embed"]
-  final_norm["final_norm"]
-  lm_head["lm_head"]
-  argmax["argmax"]
-  b0 -->|x1| b1
-  b1 -->|x1| b2
-  b10 -->|x1| b11
-  b11 -->|x1| b12
-  b12 -->|x1| b13
-  b13 -->|x1| b14
-  b14 -->|x1| b15
-  b15 -->|x1| b16
-  b16 -->|x1| b17
-  b17 -->|x1| b18
-  b18 -->|x1| b19
-  b19 -->|x1| b20
-  b2 -->|x1| b3
-  b20 -->|x1| b21
-  b21 -->|x1| b22
-  b22 -->|x1| b23
-  b23 -->|x1| final_norm
-  b3 -->|x1| b4
-  b4 -->|x1| b5
-  b5 -->|x1| b6
-  b6 -->|x1| b7
-  b7 -->|x1| b8
-  b8 -->|x1| b9
-  b9 -->|x1| b10
-  embed -->|x1| b0
-  final_norm -->|x1| lm_head
-  lm_head -->|x1| argmax
+  s0["layer 0"]
+  s1["layer 1"]
+  s2["layer 2"]
+  s3["layer 3"]
+  s4["layer 4"]
+  s5["layer 5"]
+  s6["layer 6"]
+  s7["layer 7"]
+  s8["layer 8"]
+  s9["layer 9"]
+  s10["layer 10"]
+  s11["layer 11"]
+  s12["layer 12"]
+  s13["layer 13"]
+  s14["layer 14"]
+  s15["layer 15"]
+  s16["layer 16"]
+  s17["layer 17"]
+  s18["layer 18"]
+  s19["layer 19"]
+  s20["layer 20"]
+  s21["layer 21"]
+  s22["layer 22"]
+  s23["layer 23"]
+  s24["embed"]
+  s25["final_norm"]
+  s26["lm_head"]
+  s27["argmax"]
+  s0 -->|"x1"| s1
+  s1 -->|"x1"| s2
+  s2 -->|"x1"| s3
+  s3 -->|"x1"| s4
+  s4 -->|"x1"| s5
+  s5 -->|"x1"| s6
+  s6 -->|"x1"| s7
+  s7 -->|"x1"| s8
+  s8 -->|"x1"| s9
+  s9 -->|"x1"| s10
+  s10 -->|"x1"| s11
+  s11 -->|"x1"| s12
+  s12 -->|"x1"| s13
+  s13 -->|"x1"| s14
+  s14 -->|"x1"| s15
+  s15 -->|"x1"| s16
+  s16 -->|"x1"| s17
+  s17 -->|"x1"| s18
+  s18 -->|"x1"| s19
+  s19 -->|"x1"| s20
+  s20 -->|"x1"| s21
+  s21 -->|"x1"| s22
+  s22 -->|"x1"| s23
+  s24 -->|"x1"| s0
+  s23 -->|"x1"| s25
+  s25 -->|"x1"| s26
+  s26 -->|"x1"| s27
 ```
 
 ## Layer 0
@@ -75,49 +77,46 @@ feeds as context.
 
 ```mermaid
 flowchart LR
-  subgraph layer0["layer 0"]
-    direction LR
-    b0_pre_norm["pre_norm"]
-    b0_q_proj["q_proj"]
-    b0_k_proj["k_proj"]
-    b0_v_proj["v_proj"]
-    b0_q_rope["q_rope"]
-    b0_k_rope["k_rope"]
-    b0_v_copy["v_copy"]
-    b0_attn_scores["attn_scores"]
-    b0_attn_weights["attn_weights"]
-    b0_attn_output["attn_output"]
-    b0_o_proj["o_proj"]
-    b0_residual1["residual1"]
-    b0_post_norm["post_norm"]
-    b0_gate_proj["gate_proj"]
-    b0_up_proj["up_proj"]
-    b0_swiglu["swiglu"]
-    b0_down_proj["down_proj"]
-    b0_residual2["residual2"]
-  end
-  b1_pre_norm["b1.pre_norm"]
-  embed["embed"]
-  b0_pre_norm --> b0_q_proj
-  b0_pre_norm --> b0_k_proj
-  b0_pre_norm --> b0_v_proj
-  b0_q_proj --> b0_q_rope
-  b0_k_proj --> b0_k_rope
-  b0_v_proj --> b0_v_copy
-  b0_q_rope --> b0_attn_scores
-  b0_k_rope --> b0_attn_scores
-  b0_v_copy --> b0_attn_scores
-  b0_attn_scores --> b0_attn_weights
-  b0_attn_weights --> b0_attn_output
-  b0_attn_output --> b0_o_proj
-  b0_o_proj --> b0_residual1
-  b0_residual1 --> b0_post_norm
-  b0_post_norm --> b0_gate_proj
-  b0_post_norm --> b0_up_proj
-  b0_gate_proj --> b0_swiglu
-  b0_up_proj --> b0_swiglu
-  b0_swiglu --> b0_down_proj
-  b0_down_proj --> b0_residual2
-  b0_residual2 --> b1_pre_norm
-  embed --> b0_pre_norm
+  s0["pre_norm"]
+  s1["q_proj"]
+  s2["k_proj"]
+  s3["v_proj"]
+  s4["q_rope"]
+  s5["k_rope"]
+  s6["v_copy"]
+  s7["attn_scores"]
+  s8["attn_weights"]
+  s9["attn_output"]
+  s10["o_proj"]
+  s11["residual1"]
+  s12["post_norm"]
+  s13["gate_proj"]
+  s14["up_proj"]
+  s15["swiglu"]
+  s16["down_proj"]
+  s17["residual2"]
+  s18["pre_norm"]
+  s19["embed"]
+  s0 --> s1
+  s0 --> s2
+  s0 --> s3
+  s1 --> s4
+  s2 --> s5
+  s3 --> s6
+  s4 --> s7
+  s5 --> s7
+  s6 --> s7
+  s7 --> s8
+  s8 --> s9
+  s9 --> s10
+  s10 --> s11
+  s11 --> s12
+  s12 --> s13
+  s12 --> s14
+  s13 --> s15
+  s14 --> s15
+  s15 --> s16
+  s16 --> s17
+  s17 --> s18
+  s19 --> s0
 ```

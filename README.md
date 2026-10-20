@@ -149,6 +149,12 @@ Six files are written, three Graphviz DOT and three Mermaid:
 [`docs/graph/model.md`](docs/graph/model.md) is the committed page; GitHub shows the two diagrams
 inline when the file is opened. `docs/graph/` also keeps the `.dot` files and the raw `.mmd`.
 
+The diagram syntax is Muyo's `RenderGraph::ToDot` / `RenderGraph::ToMermaid` (exposed for the
+compiled plan in Muyo #181); this repository only projects the recorded nodes and dependency edges
+into the `TraceGraph` topology they take. The projection is per **node**, not per execution segment,
+because a compute-only graph compiles to a single segment and the question here is "what is the
+model".
+
 This is the static model, not the execution trace. Muyo's trace (#165/#166) records segments,
 barriers and timeline values *per execution* and is emitted from `Execute()` via `SetTraceSink` or
 `MUYO_RG_TRACE`; the lane view (#168) is the windowed renderer's ImGui page. For a windowless,

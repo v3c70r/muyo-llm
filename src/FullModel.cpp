@@ -999,7 +999,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
 
         if (const char* dotPath = std::getenv("MUYO_RG_DOT"))
         {
-            WriteGraphDot(dotPath, graphNodes, graphEdges);
+            WriteGraphDiagrams(dotPath, graphNodes, graphEdges);
             std::fprintf(stderr, "[graph] wrote static DOT: %s (+ -overview, -layer0)\n", dotPath);
             return 0;
         }

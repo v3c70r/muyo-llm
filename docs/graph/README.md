@@ -1,8 +1,13 @@
 # Graph diagrams
 
-Static diagrams of `muyo-llm`'s authored graph model, produced from the node and dependency
-declarations **before** `Build()` (no pipeline, no allocation, no execution). GitHub renders the
-Mermaid in [`model.md`](model.md) natively.
+Static diagrams of `muyo-llm`'s declared graph model. The diagram **syntax** is Muyo's
+`RenderGraph::ToDot` / `RenderGraph::ToMermaid` (exposed for the compiled plan in Muyo #181); this
+repository only projects the recorded nodes and dependency edges into the `TraceGraph` topology they
+take. The projection is per **node**, not per execution segment, because a compute-only graph
+compiles to one segment — the question asked here is "what is the model".
+
+It is written before `Build()`, so no pipeline is compiled, no resource is allocated and nothing
+executes. GitHub renders the Mermaid in [`model.md`](model.md) natively.
 
 Regenerate with:
 
@@ -18,7 +23,7 @@ cp /tmp/model.dot /tmp/model.dot-overview /tmp/model.dot-layer0 \
 | [`model.md`](model.md) | **the two Mermaid diagrams below, GitHub renders them inline** |
 | `model-overview.mmd` | Mermaid: each layer collapsed to one node |
 | `model-layer0.mmd` | Mermaid: layer 0 in detail |
-| `model.dot` | Graphviz: all 436 nodes, one cluster per layer, 507 ordering edges |
+| `model.dot` | Graphviz: all 436 nodes, 507 ordering edges |
 | `model-overview.dot` | Graphviz: `embed → layer 0 … layer 23 → final_norm → lm_head → argmax` (27 edges) |
 | `model-layer0.dot` | Graphviz: the 18-node layer (22 edges) |
 

@@ -1,6 +1,5 @@
 #include "GraphDot.h"
 
-#include <algorithm>
 #include <cctype>
 #include <fstream>
 #include <map>
@@ -10,10 +9,18 @@
 #include <utility>
 #include <vector>
 
+#include "RenderGraph/RenderGraphTrace.h"
+
 namespace muyo_llm
 {
 namespace
 {
+using Muyo::RenderGraph::ToDot;
+using Muyo::RenderGraph::ToMermaid;
+using Muyo::RenderGraph::TraceGraph;
+using Muyo::RenderGraph::TraceGraphEdge;
+using Muyo::RenderGraph::TraceGraphNode;
+
 /// A node group: `b<digits>` for a layer, empty for a global node.
 std::string GroupOf(const std::string& name)
 {
@@ -38,97 +45,82 @@ std::string ShortLabel(const std::string& node, const std::string& group)
     return node;
 }
 
-/// Quote an identifier for DOT. Node names are `b0.q_proj`-shaped, which is not a bare DOT ID.
-std::string Quote(const std::string& text)
-{
-    std::string out = "\"";
-    for (char c : text)
-    {
-        if (c == '"' || c == '\\')
-        {
-            out.push_back('\\');
-        }
-        out.push_back(c);
-    }
-    out.push_back('"');
-    return out;
-}
+std::string LayerLabel(const std::string& group) { return group.empty() ? "global" : ("layer " + group.substr(1)); }
 
-std::string LayerLabel(const std::string& group)
+/// Every declared node and every declared edge, one graph node per declared node.
+TraceGraph FullGraph(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
 {
-    if (group.empty())
-    {
-        return "global";
-    }
-    return "layer " + group.substr(1);
-}
-
-/// A Mermaid node id. Dots are not allowed in a bare id, so they become underscores.
-std::string MermaidId(const std::string& name)
-{
-    std::string id;
-    id.reserve(name.size() + 1);
-    for (char c : name)
-    {
-        const auto u = static_cast<unsigned char>(c);
-        id.push_back(std::isalnum(u) != 0 ? c : '_');
-    }
-    if (!id.empty() && std::isdigit(static_cast<unsigned char>(id[0])))
-    {
-        id = "n_" + id;
-    }
-    return id;
-}
-
-void EmitAttributes(std::ostream& out, int fontSize)
-{
-    out << "  node [shape=box, fontsize=" << fontSize << ", fontname=\"monospace\"];\n";
-    out << "  edge [fontsize=" << (fontSize - 1) << "];\n";
-}
-
-/// The full graph: every node, one cluster per group, every authored edge.
-void EmitFull(std::ostream& out, const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
-{
-    EmitAttributes(out, 9);
-
-    std::vector<std::string> groups;
-    std::set<std::string> seen;
+    TraceGraph graph;
+    std::map<std::string, std::size_t> index;
     for (const std::string& node : nodes)
     {
-        const std::string group = GroupOf(node);
-        if (seen.insert(group).second)
-        {
-            groups.push_back(group);
-        }
-    }
-    for (const std::string& group : groups)
-    {
-        out << "  subgraph cluster_" << (group.empty() ? "global" : group) << " {\n";
-        out << "    label=" << Quote(LayerLabel(group)) << "; style=dashed; color=gray60;\n";
-        for (const std::string& node : nodes)
-        {
-            if (GroupOf(node) != group)
-            {
-                continue;
-            }
-            out << "    " << Quote(node);
-            if (group.empty())
-            {
-                out << " [style=filled, fillcolor=gray95]";
-            }
-            out << ";\n";
-        }
-        out << "  }\n";
+        const std::size_t at = graph.nodes.size();
+        index.emplace(node, at);
+        graph.nodes.push_back(TraceGraphNode{.segment = at, .label = node});
     }
     for (const GraphDotEdge& edge : edges)
     {
-        out << "  " << Quote(edge.from) << " -> " << Quote(edge.to) << ";\n";
+        const auto from = index.find(edge.from);
+        const auto to = index.find(edge.to);
+        if (from != index.end() && to != index.end())
+        {
+            graph.edges.push_back(TraceGraphEdge{.from = from->second, .to = to->second, .label = {}});
+        }
     }
+    return graph;
+}
+
+/// Each layer collapsed to one node; an edge label is how many authored edges it stands for.
+TraceGraph OverviewGraph(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
+{
+    TraceGraph graph;
+    // A layer is one node keyed by its group; a global node is its own key (the empty group is not a
+    // shared bucket, or every global would collapse into the first one).
+    std::map<std::string, std::size_t> index;
+    for (const std::string& node : nodes)
+    {
+        const std::string group = GroupOf(node);
+        const std::string key = group.empty() ? node : group;
+        if (index.count(key) != 0)
+        {
+            continue;
+        }
+        const std::size_t at = graph.nodes.size();
+        index.emplace(key, at);
+        graph.nodes.push_back(TraceGraphNode{.segment = at, .label = group.empty() ? node : LayerLabel(group)});
+    }
+
+    std::vector<std::pair<std::size_t, std::size_t>> order;
+    std::set<std::pair<std::size_t, std::size_t>> seen;
+    std::map<std::pair<std::size_t, std::size_t>, size_t> counts;
+    for (const GraphDotEdge& edge : edges)
+    {
+        const std::string fromGroup = GroupOf(edge.from);
+        const std::string toGroup = GroupOf(edge.to);
+        const auto from = index.find(fromGroup.empty() ? edge.from : fromGroup);
+        const auto to = index.find(toGroup.empty() ? edge.to : toGroup);
+        if (from == index.end() || to == index.end() || from->second == to->second)
+        {
+            continue;
+        }
+        const auto key = std::make_pair(from->second, to->second);
+        if (seen.insert(key).second)
+        {
+            order.push_back(key);  // declaration order, not lexicographic
+        }
+        ++counts[key];
+    }
+    for (const auto& [from, to] : order)
+    {
+        graph.edges.push_back(
+            TraceGraphEdge{.from = from, .to = to, .label = "x" + std::to_string(counts[{from, to}])});
+    }
+    return graph;
 }
 
 /// Layer 0 plus its immediate neighbours only (the input it reads and the layer it feeds), not the
 /// transitive closure, which would be the whole graph.
-std::set<std::string> Layer0Keep(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
+TraceGraph Layer0Graph(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
 {
     std::set<std::string> keep;
     for (const std::string& node : nodes)
@@ -149,179 +141,30 @@ std::set<std::string> Layer0Keep(const std::vector<std::string>& nodes, const st
             keep.insert(edge.from);
         }
     }
-    return keep;
-}
 
-void EmitLayer0(std::ostream& out, const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
-{
-    EmitAttributes(out, 10);
-    const std::set<std::string> keep = Layer0Keep(nodes, edges);
-
+    TraceGraph graph;
+    std::map<std::string, std::size_t> index;
     for (const std::string& node : nodes)
     {
         if (keep.count(node) == 0)
         {
             continue;
         }
-        const bool inLayer = GroupOf(node) == "b0";
-        out << "  " << Quote(node) << " [style=filled, fillcolor=" << (inLayer ? "\"#dbeafe\"" : "gray95") << "];\n";
+        const std::size_t at = graph.nodes.size();
+        index.emplace(node, at);
+        graph.nodes.push_back(TraceGraphNode{.segment = at, .label = ShortLabel(node, GroupOf(node))});
     }
     for (const GraphDotEdge& edge : edges)
     {
         const bool touchesLayer0 = GroupOf(edge.from) == "b0" || GroupOf(edge.to) == "b0";
-        if (touchesLayer0 && keep.count(edge.from) != 0 && keep.count(edge.to) != 0)
+        const auto from = index.find(edge.from);
+        const auto to = index.find(edge.to);
+        if (touchesLayer0 && from != index.end() && to != index.end())
         {
-            out << "  " << Quote(edge.from) << " -> " << Quote(edge.to) << ";\n";
+            graph.edges.push_back(TraceGraphEdge{.from = from->second, .to = to->second, .label = {}});
         }
     }
-}
-
-/// Each layer collapsed to one node, so the 24-layer chain and the globals are readable at a glance.
-void EmitOverview(std::ostream& out, const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
-{
-    EmitAttributes(out, 11);
-
-    std::vector<std::string> groups;
-    std::set<std::string> seen;
-    for (const std::string& node : nodes)
-    {
-        const std::string group = GroupOf(node);
-        if (seen.insert(group).second)
-        {
-            groups.push_back(group);
-        }
-    }
-    for (const std::string& group : groups)
-    {
-        if (group.empty())
-        {
-            continue;  // globals are emitted as themselves
-        }
-        out << "  " << Quote(group) << " [label=" << Quote(LayerLabel(group))
-            << ", style=filled, fillcolor=\"#dbeafe\"];\n";
-    }
-    for (const std::string& node : nodes)
-    {
-        if (GroupOf(node).empty())
-        {
-            out << "  " << Quote(node) << " [style=filled, fillcolor=gray95];\n";
-        }
-    }
-
-    std::set<std::pair<std::string, std::string>> collapsed;
-    std::map<std::pair<std::string, std::string>, size_t> counts;
-    for (const GraphDotEdge& edge : edges)
-    {
-        const std::string from = GroupOf(edge.from).empty() ? edge.from : GroupOf(edge.from);
-        const std::string to = GroupOf(edge.to).empty() ? edge.to : GroupOf(edge.to);
-        if (from == to)
-        {
-            continue;
-        }
-        collapsed.insert({from, to});
-        ++counts[{from, to}];
-    }
-    for (const auto& [from, to] : collapsed)
-    {
-        out << "  " << Quote(from) << " -> " << Quote(to)
-            << " [color=\"#2563eb\", penwidth=1.6, label=" << Quote("x" + std::to_string(counts[{from, to}])) << "];\n";
-    }
-}
-
-void WriteDotFile(const std::string& path, const std::string& body)
-{
-    std::ofstream out(path);
-    out << "digraph muyo_llm {\n";
-    out << "  rankdir=LR;\n";
-    out << "  graph [fontname=\"monospace\", compound=true];\n";
-    out << body;
-    out << "}\n";
-}
-
-/// Mermaid flowchart for the overview: layers as single nodes.
-std::string MermaidOverview(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
-{
-    std::ostringstream out;
-    out << "flowchart LR\n";
-
-    std::vector<std::string> groups;
-    std::set<std::string> seen;
-    for (const std::string& node : nodes)
-    {
-        const std::string group = GroupOf(node);
-        if (seen.insert(group).second)
-        {
-            groups.push_back(group);
-        }
-    }
-    for (const std::string& group : groups)
-    {
-        if (!group.empty())
-        {
-            out << "  " << MermaidId(group) << "[\"" << LayerLabel(group) << "\"]\n";
-        }
-    }
-    for (const std::string& node : nodes)
-    {
-        if (GroupOf(node).empty())
-        {
-            out << "  " << MermaidId(node) << "[\"" << node << "\"]\n";
-        }
-    }
-
-    std::set<std::pair<std::string, std::string>> collapsed;
-    std::map<std::pair<std::string, std::string>, size_t> counts;
-    for (const GraphDotEdge& edge : edges)
-    {
-        const std::string from = GroupOf(edge.from).empty() ? edge.from : GroupOf(edge.from);
-        const std::string to = GroupOf(edge.to).empty() ? edge.to : GroupOf(edge.to);
-        if (from == to)
-        {
-            continue;
-        }
-        collapsed.insert({from, to});
-        ++counts[{from, to}];
-    }
-    for (const auto& [from, to] : collapsed)
-    {
-        out << "  " << MermaidId(from) << " -->|x" << counts[{from, to}] << "| " << MermaidId(to) << "\n";
-    }
-    return out.str();
-}
-
-/// Mermaid flowchart for layer 0, with its input and the next layer as context.
-std::string MermaidLayer0(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
-{
-    std::ostringstream out;
-    out << "flowchart LR\n";
-
-    const std::set<std::string> keep = Layer0Keep(nodes, edges);
-
-    out << "  subgraph layer0[\"layer 0\"]\n    direction LR\n";
-    for (const std::string& node : nodes)
-    {
-        if (keep.count(node) != 0 && GroupOf(node) == "b0")
-        {
-            out << "    " << MermaidId(node) << "[\"" << ShortLabel(node, "b0") << "\"]\n";
-        }
-    }
-    out << "  end\n";
-    for (const std::string& node : nodes)
-    {
-        if (keep.count(node) != 0 && GroupOf(node) != "b0")
-        {
-            out << "  " << MermaidId(node) << "[\"" << node << "\"]\n";
-        }
-    }
-    for (const GraphDotEdge& edge : edges)
-    {
-        const bool touchesLayer0 = GroupOf(edge.from) == "b0" || GroupOf(edge.to) == "b0";
-        if (touchesLayer0 && keep.count(edge.from) != 0 && keep.count(edge.to) != 0)
-        {
-            out << "  " << MermaidId(edge.from) << " --> " << MermaidId(edge.to) << "\n";
-        }
-    }
-    return out.str();
+    return graph;
 }
 
 void WriteTextFile(const std::string& path, const std::string& text)
@@ -331,42 +174,35 @@ void WriteTextFile(const std::string& path, const std::string& text)
 }
 }  // namespace
 
-void WriteGraphDot(const std::string& path, const std::vector<std::string>& nodes,
-                   const std::vector<GraphDotEdge>& edges)
+void WriteGraphDiagrams(const std::string& path, const std::vector<std::string>& nodes,
+                        const std::vector<GraphDotEdge>& edges)
 {
-    {
-        std::ostringstream body;
-        EmitFull(body, nodes, edges);
-        WriteDotFile(path, body.str());
-    }
-    {
-        std::ostringstream body;
-        EmitOverview(body, nodes, edges);
-        WriteDotFile(path + "-overview", body.str());
-    }
-    {
-        std::ostringstream body;
-        EmitLayer0(body, nodes, edges);
-        WriteDotFile(path + "-layer0", body.str());
-    }
+    const TraceGraph full = FullGraph(nodes, edges);
+    const TraceGraph overview = OverviewGraph(nodes, edges);
+    const TraceGraph layer0 = Layer0Graph(nodes, edges);
 
-    // Mermaid: GitHub renders it natively, so the raw files and a markdown page are written too.
-    const std::string overview = MermaidOverview(nodes, edges);
-    const std::string layer0 = MermaidLayer0(nodes, edges);
-    WriteTextFile(path + "-overview.mmd", overview);
-    WriteTextFile(path + "-layer0.mmd", layer0);
+    WriteTextFile(path, ToDot(full));
+    WriteTextFile(path + "-overview", ToDot(overview));
+    WriteTextFile(path + "-layer0", ToDot(layer0));
+
+    const std::string overviewMermaid = ToMermaid(overview);
+    const std::string layer0Mermaid = ToMermaid(layer0);
+    WriteTextFile(path + "-overview.mmd", overviewMermaid);
+    WriteTextFile(path + "-layer0.mmd", layer0Mermaid);
 
     std::ostringstream page;
     page << "# muyo-llm graph model\n\n";
     page << "Generated from the node and dependency declarations before `Build()` by\n";
     page << "`MUYO_RG_DOT=<path> ./muyo_llm --forward <gguf> -p hi` (see `docs/graph/README.md`).\n";
-    page << "GitHub renders the Mermaid below natively.\n\n";
+    page << "The diagram syntax is Muyo's `RenderGraph::ToDot`/`ToMermaid`; this repo only projects the\n";
+    page << "declared nodes and edges into the `TraceGraph` topology they take. GitHub renders the\n";
+    page << "Mermaid below natively.\n\n";
     page << "## Overview\n\nEach layer is one node; the label on an edge is how many authored edges it\n";
     page << "collapses. `embed → layer 0 … layer 23 → final_norm → lm_head → argmax`.\n\n";
-    page << "```mermaid\n" << overview << "```\n\n";
+    page << "```mermaid\n" << overviewMermaid << "```\n\n";
     page << "## Layer 0\n\nThe 18-node transformer unit, with the embedding it reads and the next layer it\n";
     page << "feeds as context.\n\n";
-    page << "```mermaid\n" << layer0 << "```\n";
+    page << "```mermaid\n" << layer0Mermaid << "```\n";
     WriteTextFile(path + ".md", page.str());
 }
 }  // namespace muyo_llm
