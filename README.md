@@ -122,6 +122,32 @@ full forwards — `mul_mm` and `flash_attn` are the M6 work). `tools/reference_q
 reference for the same forward, and `MUYO_LOGITS=<file>` / `MUYO_DUMP=<dir>` make the engine write
 logits and per-layer intermediates so they can be compared element by element.
 
+## Visualising the graph model
+
+`MUYO_RG_DOT=<path>` with `--forward` writes a **static** Graphviz DOT of the authored model. It is
+taken from the node and dependency declarations, before `Build()` — no pipeline is compiled, no
+resource is allocated, nothing executes — so it needs nothing but the model's config:
+
+```bash
+cd build
+MUYO_RG_DOT=/tmp/model.dot ./muyo_llm --forward ../testdata/qwen2.5-0.5b-instruct-fp16.gguf -p hi
+dot -Tsvg /tmp/model.dot-overview -o model-overview.svg
+dot -Tpng /tmp/model.dot-layer0     -o model-layer0.png
+```
+
+Three files are written:
+
+| File | What it shows |
+| --- | --- |
+| `<path>` | all 436 nodes, one cluster per transformer layer, all 507 ordering edges |
+| `<path>-overview` | each layer collapsed to one node: `embed → layer 0 … layer 23 → final_norm → lm_head → argmax` (27 edges) |
+| `<path>-layer0` | the 18-node layer in detail: `pre_norm → {q,k,v} → attention → o_proj → residual1 → post_norm → {gate,up} → swiglu → down_proj → residual2` (22 edges) |
+
+This is the static model, not the execution trace. Muyo's trace (#165/#166) records segments,
+barriers and timeline values *per execution* and is emitted from `Execute()` via `SetTraceSink` or
+`MUYO_RG_TRACE`; the lane view (#168) is the windowed renderer's ImGui page. For a windowless,
+long-running consumer the declaration-level DOT is the thing to read.
+
 ## Build
 
 Muyo is embedded as a submodule; a development checkout can be substituted with
@@ -139,23 +165,24 @@ ASan/UBSan.
 
 ## Upstream state
 
-**Validated against Muyo `14eea19`** ("helloVulkanRG: a render-graph app that owns its frame loop").
-Rebuilt and re-ran `scripts/sanity.sh` (all 12 modes, validation on) and `scripts/verify-forward.sh`
-(greedy tokens + token ids vs llama.cpp) with no compile error, no deprecation warning and no named
-runtime failure.
+**Validated against Muyo `f3ecbf1`** ("RenderGraph: draw an execution as lanes, with the geometry
+tested and the drawing thin"). Rebuilt and re-ran `scripts/sanity.sh` (all 12 modes, validation on)
+and `scripts/verify-forward.sh` (greedy tokens + token ids vs llama.cpp) with no compile error, no
+deprecation warning and no named runtime failure.
 
-Since the previously recorded pin `fe40dd3`, the consumer-relevant change is **#16's transient
-aliasing** (`36d8ab2` … `9ef01ac`, with lifetime enforcement in `27eb53e`) — a graph-owned transient
-is no longer a resource-manager resource (`ResolveResource` is the lookup) and its content is valid
-only from its first write within one execution, so every resource whose content comes from the host
-or is read back by the host is now `Persistent`. The finding, and the evidence that the aliasing
-works on the real workload, is `docs/Findings.md` F14. (The step from `e71f610`, where that was
-validated, to `14eea19` is a renderer-only `src/Swapchain.*` change.) Upstream also landed the
-descriptor work (#107/#108/#109), `#55`'s `Build()` diagnostics (`347eb11`), the lavapipe CI gate
-(#22), and the renderer's present path (#110/#111/#112).
+Since the previously recorded pin `fe40dd3` (37 commits), the consumer-relevant change is **#16's
+transient aliasing** (`36d8ab2` … `9ef01ac`, with lifetime enforcement in `27eb53e`) — a graph-owned
+transient is no longer a resource-manager resource (`ResolveResource` is the lookup) and its content
+is valid only from its first write within one execution, so every resource whose content comes from
+the host or is read back by the host is now `Persistent`. The finding, and the evidence that the
+aliasing works on the real workload, is `docs/Findings.md` F14. Upstream also landed the descriptor
+work (#107/#108/#109), a large set of `Build()` declaration checks (#126/#128/#129/#131/#136/#138/
+#140/#143/#147), barrier derivation from the uses (#12, #160), `HOST_WRITE` as a declaration (#152),
+the execution trace and lane view (#165/#166/#168), `#55`'s `Build()` diagnostics, the lavapipe CI
+gate (#22), and the renderer's present path. None of it broke this consumer.
 
-The consumer report for the aliasing row is
-[PR #114](https://github.com/v3c70r/Muyo/pull/114).
+The consumer report for the aliasing row was
+[PR #114](https://github.com/v3c70r/Muyo/pull/114) (merged `33e9346`).
 
 The previous pin, `fe40dd3`, added the injected graph services (`0294326`, the injection slice of
 #53): this repo switched to the services constructor in the same pass (`src/GraphServices.h`), which

@@ -15,6 +15,7 @@
 
 #include "ChatTemplate.h"
 #include "Gguf.h"
+#include "GraphDot.h"
 #include "GraphServices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
@@ -509,6 +510,22 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
 
         RenderGraphBuilder builder(GraphServices());
 
+        // Record the authored model so MUYO_RG_DOT can export a static DOT. This is the
+        // declaration, not an execution trace: it is written before Build(), so no pipeline is
+        // compiled, no resource is allocated and nothing runs.
+        std::vector<std::string> graphNodes;
+        std::vector<GraphDotEdge> graphEdges;
+        const auto addNode = [&](const RenderGraphNodeCreateInfo& info)
+        {
+            graphNodes.push_back(info.nodeName);
+            builder.AddNode(info);
+        };
+        const auto addDep = [&](const std::string& from, const std::string& to)
+        {
+            graphEdges.push_back({from, to});
+            builder.AddDependency(from, to);
+        };
+
         const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         // When MUYO_DUMP is set the intermediates are made host-visible so they can be mapped for a
         // comparison; the weights stay device-local either way.
@@ -706,7 +723,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             const std::string downProj = LayerName(layer, "down_proj");
             const std::string residual2 = LayerName(layer, "residual2");
 
-            builder.AddNode(
+            addNode(
                 {.nodeName = preNorm,
                  .queueType = QueueType::COMPUTE,
                  .resourceUses = {MakeUse(input, ResourceIOType::READ, llama_add_bindings::A),
@@ -726,52 +743,52 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                 spec.strideB = config.hidden;
                 spec.dispatchX = rows;
                 spec.fusionFlags = llama_mat_vec_fusion::BIAS0;
-                builder.AddNode({.nodeName = node,
-                                 .queueType = QueueType::COMPUTE,
-                                 .resourceUses = gemvUses(weight, xn, destination, bias, "partial"),
-                                 .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
-                                 .specializationConstants = gemvSpec,
-                                 .execute = MatVecExecute(spec)});
+                addNode({.nodeName = node,
+                         .queueType = QueueType::COMPUTE,
+                         .resourceUses = gemvUses(weight, xn, destination, bias, "partial"),
+                         .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
+                         .specializationConstants = gemvSpec,
+                         .execute = MatVecExecute(spec)});
             };
             projection(qProj, LayerName(layer, "wq"), LayerName(layer, "bq"), q, config.queryDim);
             projection(kProj, LayerName(layer, "wk"), LayerName(layer, "bk"), kvec, config.kvDim);
             projection(vProj, LayerName(layer, "wv"), LayerName(layer, "bv"), vvec, config.kvDim);
 
-            builder.AddNode({.nodeName = qRope,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = {MakeUse(q, ResourceIOType::READ, llama_rope_bindings::X),
-                                              MakeUse("rope_pos", ResourceIOType::READ, llama_rope_bindings::Y),
-                                              MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::Z),
-                                              MakeUse(qr, ResourceIOType::READ_WRITE, llama_rope_bindings::D),
-                                              MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::I)},
-                             .shaderNames = {"rope_neox_f32.comp"},
-                             .execute = RopeExecute(RopeSpec{.rows = config.heads,
-                                                             .headDim = config.headDim,
-                                                             .inputRowStride = config.headDim,
-                                                             .outputRowStride = config.headDim,
-                                                             .freqBase = config.ropeBase})});
+            addNode({.nodeName = qRope,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(q, ResourceIOType::READ, llama_rope_bindings::X),
+                                      MakeUse("rope_pos", ResourceIOType::READ, llama_rope_bindings::Y),
+                                      MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::Z),
+                                      MakeUse(qr, ResourceIOType::READ_WRITE, llama_rope_bindings::D),
+                                      MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::I)},
+                     .shaderNames = {"rope_neox_f32.comp"},
+                     .execute = RopeExecute(RopeSpec{.rows = config.heads,
+                                                     .headDim = config.headDim,
+                                                     .inputRowStride = config.headDim,
+                                                     .outputRowStride = config.headDim,
+                                                     .freqBase = config.ropeBase})});
 
-            builder.AddNode({.nodeName = kRope,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = {MakeUse(kvec, ResourceIOType::READ, llama_rope_bindings::X),
-                                              MakeUse("rope_pos", ResourceIOType::READ, llama_rope_bindings::Y),
-                                              MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::Z),
-                                              MakeUse(kcache, ResourceIOType::READ_WRITE, llama_rope_bindings::D),
-                                              MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::I)},
-                             .shaderNames = {"rope_neox_f32.comp"},
-                             .execute = RopeExecute(RopeSpec{.rows = config.kvHeads,
-                                                             .headDim = config.headDim,
-                                                             .inputRowStride = config.headDim,
-                                                             .outputRowStride = config.headDim * K_MAX_SEQ,
-                                                             .freqBase = config.ropeBase,
-                                                             .position = &position})});
+            addNode({.nodeName = kRope,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(kvec, ResourceIOType::READ, llama_rope_bindings::X),
+                                      MakeUse("rope_pos", ResourceIOType::READ, llama_rope_bindings::Y),
+                                      MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::Z),
+                                      MakeUse(kcache, ResourceIOType::READ_WRITE, llama_rope_bindings::D),
+                                      MakeUse("rope_scratch", ResourceIOType::READ, llama_rope_bindings::I)},
+                     .shaderNames = {"rope_neox_f32.comp"},
+                     .execute = RopeExecute(RopeSpec{.rows = config.kvHeads,
+                                                     .headDim = config.headDim,
+                                                     .inputRowStride = config.headDim,
+                                                     .outputRowStride = config.headDim * K_MAX_SEQ,
+                                                     .freqBase = config.ropeBase,
+                                                     .position = &position})});
 
-            builder.AddNode({.nodeName = vCopy,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = {MakeUse(vvec, ResourceIOType::READ, 0),
-                                              MakeUse(vcache, ResourceIOType::READ_WRITE, 1)},
-                             .shaderNames = {"cpy_f32_f32.comp"},
-                             .execute = CopyValueColumnExecute(config.kvDim, config.headDim, K_MAX_SEQ, &position)});
+            addNode({.nodeName = vCopy,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(vvec, ResourceIOType::READ, 0),
+                                      MakeUse(vcache, ResourceIOType::READ_WRITE, 1)},
+                     .shaderNames = {"cpy_f32_f32.comp"},
+                     .execute = CopyValueColumnExecute(config.kvDim, config.headDim, K_MAX_SEQ, &position)});
 
             MatVecSpec scoresSpec;
             scoresSpec.ncols = config.headDim;
@@ -787,24 +804,23 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             scoresSpec.broadcast3 = 1;
             scoresSpec.dispatchY = config.heads;
             scoresSpec.keysSoFar = &position;  // Dispatch grows with the cache.
-            builder.AddNode({.nodeName = attnScores,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = gemvUses(kcache, qr, scores, "partial", "partial"),
-                             .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
-                             .specializationConstants = gemvSpec,
-                             .execute = MatVecExecute(scoresSpec)});
+            addNode({.nodeName = attnScores,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = gemvUses(kcache, qr, scores, "partial", "partial"),
+                     .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
+                     .specializationConstants = gemvSpec,
+                     .execute = MatVecExecute(scoresSpec)});
 
-            builder.AddNode(
-                {.nodeName = attnWeights,
-                 .queueType = QueueType::COMPUTE,
-                 .resourceUses = {MakeUse(scores, ResourceIOType::READ, llama_soft_max_bindings::X),
-                                  MakeUse("softmax_mask", ResourceIOType::READ, llama_soft_max_bindings::Y),
-                                  MakeUse("softmax_sinks", ResourceIOType::READ, llama_soft_max_bindings::Z),
-                                  MakeUse(probs, ResourceIOType::READ_WRITE, llama_soft_max_bindings::D)},
-                 .shaderNames = {"soft_max_f32.comp"},
-                 .specializationConstants = {{.id = llama_soft_max_spec_constants::BLOCK_SIZE,
-                                              .value = K_SOFT_MAX_BLOCK_SIZE}},
-                 .execute = SoftMaxExecute(config.heads, K_MAX_SEQ, attentionScale)});
+            addNode({.nodeName = attnWeights,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(scores, ResourceIOType::READ, llama_soft_max_bindings::X),
+                                      MakeUse("softmax_mask", ResourceIOType::READ, llama_soft_max_bindings::Y),
+                                      MakeUse("softmax_sinks", ResourceIOType::READ, llama_soft_max_bindings::Z),
+                                      MakeUse(probs, ResourceIOType::READ_WRITE, llama_soft_max_bindings::D)},
+                     .shaderNames = {"soft_max_f32.comp"},
+                     .specializationConstants = {{.id = llama_soft_max_spec_constants::BLOCK_SIZE,
+                                                  .value = K_SOFT_MAX_BLOCK_SIZE}},
+                     .execute = SoftMaxExecute(config.heads, K_MAX_SEQ, attentionScale)});
 
             MatVecSpec valueSpec;
             valueSpec.ncols = K_MAX_SEQ;
@@ -820,12 +836,12 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             valueSpec.broadcast3 = 1;
             valueSpec.dispatchX = config.headDim;
             valueSpec.dispatchY = config.heads;
-            builder.AddNode({.nodeName = attnOutput,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = gemvUses(vcache, probs, attnOut, "partial", "partial"),
-                             .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
-                             .specializationConstants = gemvSpec,
-                             .execute = MatVecExecute(valueSpec)});
+            addNode({.nodeName = attnOutput,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = gemvUses(vcache, probs, attnOut, "partial", "partial"),
+                     .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
+                     .specializationConstants = gemvSpec,
+                     .execute = MatVecExecute(valueSpec)});
 
             MatVecSpec outputSpec;
             outputSpec.ncols = config.queryDim;
@@ -833,25 +849,24 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             outputSpec.strideA = config.queryDim;
             outputSpec.strideB = config.queryDim;
             outputSpec.dispatchX = config.hidden;
-            builder.AddNode({.nodeName = oProj,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = gemvUses(LayerName(layer, "wo"), attnOut, o, "partial", "partial"),
-                             .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
-                             .specializationConstants = gemvSpec,
-                             .execute = MatVecExecute(outputSpec)});
+            addNode({.nodeName = oProj,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = gemvUses(LayerName(layer, "wo"), attnOut, o, "partial", "partial"),
+                     .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
+                     .specializationConstants = gemvSpec,
+                     .execute = MatVecExecute(outputSpec)});
 
-            builder.AddNode(
-                {.nodeName = residual1,
-                 .queueType = QueueType::COMPUTE,
-                 .resourceUses = {MakeUse(input, ResourceIOType::READ, llama_add_bindings::A),
-                                  MakeUse(o, ResourceIOType::READ, llama_add_bindings::B),
-                                  MakeUse(x1, ResourceIOType::READ_WRITE, llama_add_bindings::D),
-                                  MakeUse("partial", ResourceIOType::READ_WRITE, llama_add_bindings::PARTIAL_SUMS)},
-                 .shaderNames = {"add_f32.comp"},
-                 .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
-                 .execute = AddExecute(config.hidden)});
+            addNode({.nodeName = residual1,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(input, ResourceIOType::READ, llama_add_bindings::A),
+                                      MakeUse(o, ResourceIOType::READ, llama_add_bindings::B),
+                                      MakeUse(x1, ResourceIOType::READ_WRITE, llama_add_bindings::D),
+                                      MakeUse("partial", ResourceIOType::READ_WRITE, llama_add_bindings::PARTIAL_SUMS)},
+                     .shaderNames = {"add_f32.comp"},
+                     .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
+                     .execute = AddExecute(config.hidden)});
 
-            builder.AddNode(
+            addNode(
                 {.nodeName = postNorm,
                  .queueType = QueueType::COMPUTE,
                  .resourceUses = {MakeUse(x1, ResourceIOType::READ, llama_add_bindings::A),
@@ -867,26 +882,26 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             mlpSpec.strideA = config.hidden;
             mlpSpec.strideB = config.hidden;
             mlpSpec.dispatchX = config.feedForward;
-            builder.AddNode({.nodeName = gateProj,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = gemvUses(LayerName(layer, "wgate"), xn2, gate, "partial", "partial"),
-                             .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
-                             .specializationConstants = gemvSpec,
-                             .execute = MatVecExecute(mlpSpec)});
-            builder.AddNode({.nodeName = upProj,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = gemvUses(LayerName(layer, "wup"), xn2, up, "partial", "partial"),
-                             .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
-                             .specializationConstants = gemvSpec,
-                             .execute = MatVecExecute(mlpSpec)});
+            addNode({.nodeName = gateProj,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = gemvUses(LayerName(layer, "wgate"), xn2, gate, "partial", "partial"),
+                     .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
+                     .specializationConstants = gemvSpec,
+                     .execute = MatVecExecute(mlpSpec)});
+            addNode({.nodeName = upProj,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = gemvUses(LayerName(layer, "wup"), xn2, up, "partial", "partial"),
+                     .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
+                     .specializationConstants = gemvSpec,
+                     .execute = MatVecExecute(mlpSpec)});
 
-            builder.AddNode({.nodeName = swiglu,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = {MakeUse(gate, ResourceIOType::READ, llama_glu_bindings::A),
-                                              MakeUse(up, ResourceIOType::READ, llama_glu_bindings::B),
-                                              MakeUse(act, ResourceIOType::READ_WRITE, llama_glu_bindings::D)},
-                             .shaderNames = {"swiglu_f32.comp"},
-                             .execute = SwigluExecute(config.feedForward)});
+            addNode({.nodeName = swiglu,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(gate, ResourceIOType::READ, llama_glu_bindings::A),
+                                      MakeUse(up, ResourceIOType::READ, llama_glu_bindings::B),
+                                      MakeUse(act, ResourceIOType::READ_WRITE, llama_glu_bindings::D)},
+                     .shaderNames = {"swiglu_f32.comp"},
+                     .execute = SwigluExecute(config.feedForward)});
 
             MatVecSpec downSpec;
             downSpec.ncols = config.feedForward;
@@ -894,59 +909,58 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             downSpec.strideA = config.feedForward;
             downSpec.strideB = config.feedForward;
             downSpec.dispatchX = config.hidden;
-            builder.AddNode({.nodeName = downProj,
-                             .queueType = QueueType::COMPUTE,
-                             .resourceUses = gemvUses(LayerName(layer, "wdown"), act, mlpOut, "partial", "partial"),
-                             .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
-                             .specializationConstants = gemvSpec,
-                             .execute = MatVecExecute(downSpec)});
+            addNode({.nodeName = downProj,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = gemvUses(LayerName(layer, "wdown"), act, mlpOut, "partial", "partial"),
+                     .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
+                     .specializationConstants = gemvSpec,
+                     .execute = MatVecExecute(downSpec)});
 
-            builder.AddNode(
-                {.nodeName = residual2,
-                 .queueType = QueueType::COMPUTE,
-                 .resourceUses = {MakeUse(x1, ResourceIOType::READ, llama_add_bindings::A),
-                                  MakeUse(mlpOut, ResourceIOType::READ, llama_add_bindings::B),
-                                  MakeUse(out, ResourceIOType::READ_WRITE, llama_add_bindings::D),
-                                  MakeUse("partial", ResourceIOType::READ_WRITE, llama_add_bindings::PARTIAL_SUMS)},
-                 .shaderNames = {"add_f32.comp"},
-                 .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
-                 .execute = AddExecute(config.hidden)});
+            addNode({.nodeName = residual2,
+                     .queueType = QueueType::COMPUTE,
+                     .resourceUses = {MakeUse(x1, ResourceIOType::READ, llama_add_bindings::A),
+                                      MakeUse(mlpOut, ResourceIOType::READ, llama_add_bindings::B),
+                                      MakeUse(out, ResourceIOType::READ_WRITE, llama_add_bindings::D),
+                                      MakeUse("partial", ResourceIOType::READ_WRITE, llama_add_bindings::PARTIAL_SUMS)},
+                     .shaderNames = {"add_f32.comp"},
+                     .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
+                     .execute = AddExecute(config.hidden)});
 
-            builder.AddDependency(preNorm, qProj);
-            builder.AddDependency(preNorm, kProj);
-            builder.AddDependency(preNorm, vProj);
-            builder.AddDependency(qProj, qRope);
-            builder.AddDependency(kProj, kRope);
-            builder.AddDependency(vProj, vCopy);
-            builder.AddDependency(qRope, attnScores);
-            builder.AddDependency(kRope, attnScores);
-            builder.AddDependency(vCopy, attnScores);
-            builder.AddDependency(attnScores, attnWeights);
-            builder.AddDependency(attnWeights, attnOutput);
-            builder.AddDependency(attnOutput, oProj);
-            builder.AddDependency(oProj, residual1);
-            builder.AddDependency(residual1, postNorm);
-            builder.AddDependency(postNorm, gateProj);
-            builder.AddDependency(postNorm, upProj);
-            builder.AddDependency(gateProj, swiglu);
-            builder.AddDependency(upProj, swiglu);
-            builder.AddDependency(swiglu, downProj);
-            builder.AddDependency(downProj, residual2);
+            addDep(preNorm, qProj);
+            addDep(preNorm, kProj);
+            addDep(preNorm, vProj);
+            addDep(qProj, qRope);
+            addDep(kProj, kRope);
+            addDep(vProj, vCopy);
+            addDep(qRope, attnScores);
+            addDep(kRope, attnScores);
+            addDep(vCopy, attnScores);
+            addDep(attnScores, attnWeights);
+            addDep(attnWeights, attnOutput);
+            addDep(attnOutput, oProj);
+            addDep(oProj, residual1);
+            addDep(residual1, postNorm);
+            addDep(postNorm, gateProj);
+            addDep(postNorm, upProj);
+            addDep(gateProj, swiglu);
+            addDep(upProj, swiglu);
+            addDep(swiglu, downProj);
+            addDep(downProj, residual2);
             if (layer > 0)
             {
-                builder.AddDependency(LayerName(layer - 1, "residual2"), preNorm);
+                addDep(LayerName(layer - 1, "residual2"), preNorm);
             }
         }
 
-        builder.AddNode({.nodeName = "embed",
-                         .queueType = QueueType::COMPUTE,
-                         .resourceUses = {MakeUse("token_embd", ResourceIOType::READ, llama_add_bindings::A),
-                                          MakeUse("token_id", ResourceIOType::READ, llama_add_bindings::B),
-                                          MakeUse("embedding", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
-                         .shaderNames = {"get_rows_f16_f32.comp"},
-                         .execute = GetRowsExecute(config.hidden, config.vocab)});
+        addNode({.nodeName = "embed",
+                 .queueType = QueueType::COMPUTE,
+                 .resourceUses = {MakeUse("token_embd", ResourceIOType::READ, llama_add_bindings::A),
+                                  MakeUse("token_id", ResourceIOType::READ, llama_add_bindings::B),
+                                  MakeUse("embedding", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
+                 .shaderNames = {"get_rows_f16_f32.comp"},
+                 .execute = GetRowsExecute(config.hidden, config.vocab)});
 
-        builder.AddNode(
+        addNode(
             {.nodeName = "final_norm",
              .queueType = QueueType::COMPUTE,
              .resourceUses = {MakeUse(LayerName(config.layers - 1, "out"), ResourceIOType::READ, llama_add_bindings::A),
@@ -962,14 +976,14 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         lmSpec.strideA = config.hidden;
         lmSpec.strideB = config.hidden;
         lmSpec.dispatchX = config.vocab;
-        builder.AddNode({.nodeName = "lm_head",
-                         .queueType = QueueType::COMPUTE,
-                         .resourceUses = gemvUses("output", "final_norm", "logits", "partial", "partial"),
-                         .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
-                         .specializationConstants = gemvSpec,
-                         .execute = MatVecExecute(lmSpec)});
+        addNode({.nodeName = "lm_head",
+                 .queueType = QueueType::COMPUTE,
+                 .resourceUses = gemvUses("output", "final_norm", "logits", "partial", "partial"),
+                 .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
+                 .specializationConstants = gemvSpec,
+                 .execute = MatVecExecute(lmSpec)});
 
-        builder.AddNode(
+        addNode(
             {.nodeName = "argmax",
              .queueType = QueueType::COMPUTE,
              .resourceUses = {MakeUse("logits", ResourceIOType::READ, llama_argmax_bindings::A),
@@ -978,10 +992,17 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
              .specializationConstants = {{.id = llama_argmax_spec_constants::BLOCK_SIZE, .value = K_ARGMAX_BLOCK_SIZE}},
              .execute = ArgmaxExecute(config.vocab)});
 
-        builder.AddDependency("embed", LayerName(0, "pre_norm"));
-        builder.AddDependency(LayerName(config.layers - 1, "residual2"), "final_norm");
-        builder.AddDependency("final_norm", "lm_head");
-        builder.AddDependency("lm_head", "argmax");
+        addDep("embed", LayerName(0, "pre_norm"));
+        addDep(LayerName(config.layers - 1, "residual2"), "final_norm");
+        addDep("final_norm", "lm_head");
+        addDep("lm_head", "argmax");
+
+        if (const char* dotPath = std::getenv("MUYO_RG_DOT"))
+        {
+            WriteGraphDot(dotPath, graphNodes, graphEdges);
+            std::fprintf(stderr, "[graph] wrote static DOT: %s (+ -overview, -layer0)\n", dotPath);
+            return 0;
+        }
 
         builder.Build();
 
