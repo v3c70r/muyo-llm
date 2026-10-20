@@ -1,21 +1,29 @@
-# Generated graph diagrams
+# Graph diagrams
 
-Static Graphviz DOT of `muyo-llm`'s authored graph model, produced from the node and dependency
-declarations **before** `Build()` (no pipeline, no allocation, no execution). Regenerate with:
+Static diagrams of `muyo-llm`'s authored graph model, produced from the node and dependency
+declarations **before** `Build()` (no pipeline, no allocation, no execution). GitHub renders the
+Mermaid in [`model.md`](model.md) natively.
+
+Regenerate with:
 
 ```bash
 cd build
 MUYO_RG_DOT=/tmp/model.dot ./muyo_llm --forward ../testdata/qwen2.5-0.5b-instruct-fp16.gguf -p hi
-cp /tmp/model.dot /tmp/model.dot-overview /tmp/model.dot-layer0 ../docs/graph/
-dot -Tsvg ../docs/graph/model-overview.dot -o model-overview.svg
-dot -Tpng ../docs/graph/model-layer0.dot   -o model-layer0.png
+cp /tmp/model.dot /tmp/model.dot-overview /tmp/model.dot-layer0 \
+   /tmp/model.dot-overview.mmd /tmp/model.dot-layer0.mmd /tmp/model.dot.md ../docs/graph/
 ```
 
-- `model.dot` — all 436 nodes, one cluster per transformer layer, 507 ordering edges.
-- `model-overview.dot` — each layer collapsed to one node:
-  `embed → layer 0 … layer 23 → final_norm → lm_head → argmax` (27 edges).
-- `model-layer0.dot` — the 18-node layer in detail (22 edges).
+| File | What it shows |
+| --- | --- |
+| [`model.md`](model.md) | **the two Mermaid diagrams below, GitHub renders them inline** |
+| `model-overview.mmd` | Mermaid: each layer collapsed to one node |
+| `model-layer0.mmd` | Mermaid: layer 0 in detail |
+| `model.dot` | Graphviz: all 436 nodes, one cluster per layer, 507 ordering edges |
+| `model-overview.dot` | Graphviz: `embed → layer 0 … layer 23 → final_norm → lm_head → argmax` (27 edges) |
+| `model-layer0.dot` | Graphviz: the 18-node layer (22 edges) |
 
-These are artifacts, not sources: they change when the graph does. This is the static model, not
-Muyo's execution trace (#165/#166), which records barriers, segments and timeline values per
-execution and is emitted from `Execute()`.
+Render the DOT files with `dot -Tsvg model-overview.dot -o model-overview.svg`.
+
+These are artifacts, not sources: they change when the graph does. This is the **static model**,
+not Muyo's execution trace (#165/#166), which records segments, barriers and timeline values per
+execution and is emitted from `Execute()` via `SetTraceSink` or `MUYO_RG_TRACE`.

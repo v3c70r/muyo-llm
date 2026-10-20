@@ -1,0 +1,46 @@
+flowchart LR
+  subgraph layer0["layer 0"]
+    direction LR
+    b0_pre_norm["pre_norm"]
+    b0_q_proj["q_proj"]
+    b0_k_proj["k_proj"]
+    b0_v_proj["v_proj"]
+    b0_q_rope["q_rope"]
+    b0_k_rope["k_rope"]
+    b0_v_copy["v_copy"]
+    b0_attn_scores["attn_scores"]
+    b0_attn_weights["attn_weights"]
+    b0_attn_output["attn_output"]
+    b0_o_proj["o_proj"]
+    b0_residual1["residual1"]
+    b0_post_norm["post_norm"]
+    b0_gate_proj["gate_proj"]
+    b0_up_proj["up_proj"]
+    b0_swiglu["swiglu"]
+    b0_down_proj["down_proj"]
+    b0_residual2["residual2"]
+  end
+  b1_pre_norm["b1.pre_norm"]
+  embed["embed"]
+  b0_pre_norm --> b0_q_proj
+  b0_pre_norm --> b0_k_proj
+  b0_pre_norm --> b0_v_proj
+  b0_q_proj --> b0_q_rope
+  b0_k_proj --> b0_k_rope
+  b0_v_proj --> b0_v_copy
+  b0_q_rope --> b0_attn_scores
+  b0_k_rope --> b0_attn_scores
+  b0_v_copy --> b0_attn_scores
+  b0_attn_scores --> b0_attn_weights
+  b0_attn_weights --> b0_attn_output
+  b0_attn_output --> b0_o_proj
+  b0_o_proj --> b0_residual1
+  b0_residual1 --> b0_post_norm
+  b0_post_norm --> b0_gate_proj
+  b0_post_norm --> b0_up_proj
+  b0_gate_proj --> b0_swiglu
+  b0_up_proj --> b0_swiglu
+  b0_swiglu --> b0_down_proj
+  b0_down_proj --> b0_residual2
+  b0_residual2 --> b1_pre_norm
+  embed --> b0_pre_norm

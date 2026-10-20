@@ -135,13 +135,19 @@ dot -Tsvg /tmp/model.dot-overview -o model-overview.svg
 dot -Tpng /tmp/model.dot-layer0     -o model-layer0.png
 ```
 
-Three files are written:
+Six files are written, three Graphviz DOT and three Mermaid:
 
 | File | What it shows |
 | --- | --- |
-| `<path>` | all 436 nodes, one cluster per transformer layer, all 507 ordering edges |
-| `<path>-overview` | each layer collapsed to one node: `embed → layer 0 … layer 23 → final_norm → lm_head → argmax` (27 edges) |
-| `<path>-layer0` | the 18-node layer in detail: `pre_norm → {q,k,v} → attention → o_proj → residual1 → post_norm → {gate,up} → swiglu → down_proj → residual2` (22 edges) |
+| `<path>` | DOT: all 436 nodes, one cluster per transformer layer, all 507 ordering edges |
+| `<path>-overview` | DOT: each layer collapsed to one node: `embed → layer 0 … layer 23 → final_norm → lm_head → argmax` (27 edges) |
+| `<path>-layer0` | DOT: the 18-node layer in detail: `pre_norm → {q,k,v} → attention → o_proj → residual1 → post_norm → {gate,up} → swiglu → down_proj → residual2` (22 edges) |
+| `<path>-overview.mmd` | Mermaid: the overview |
+| `<path>-layer0.mmd` | Mermaid: layer 0 |
+| `<path>.md` | a markdown page embedding both Mermaid blocks, which GitHub renders natively |
+
+[`docs/graph/model.md`](docs/graph/model.md) is the committed page; GitHub shows the two diagrams
+inline when the file is opened. `docs/graph/` also keeps the `.dot` files and the raw `.mmd`.
 
 This is the static model, not the execution trace. Muyo's trace (#165/#166) records segments,
 barriers and timeline values *per execution* and is emitted from `Execute()` via `SetTraceSink` or

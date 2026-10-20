@@ -22,6 +22,9 @@ struct GraphDotEdge
 /// - `path-overview`: each layer collapsed to one node, so the 24-layer chain and the globals are
 ///   readable at a glance.
 /// - `path-layer0`: layer 0 in detail, with the global/main-link nodes it touches as context.
+/// - `path-overview.mmd`, `path-layer0.mmd`: the same two as Mermaid flowcharts.
+/// - `path.md`: a markdown page embedding both Mermaid diagrams in fenced blocks, which GitHub
+///   renders natively.
 ///
 /// Node groups are the `b<digits>` prefix of a name; anything else (`embed`, `final_norm`, `lm_head`,
 /// `argmax`) is "global". `dot -Tsvg path` renders it.

@@ -28,6 +28,16 @@ std::string GroupOf(const std::string& name)
     return {};
 }
 
+std::string ShortLabel(const std::string& node, const std::string& group)
+{
+    if (!group.empty() && node.compare(0, group.size(), group) == 0 && node.size() > group.size() &&
+        node[group.size()] == '.')
+    {
+        return node.substr(group.size() + 1);
+    }
+    return node;
+}
+
 /// Quote an identifier for DOT. Node names are `b0.q_proj`-shaped, which is not a bare DOT ID.
 std::string Quote(const std::string& text)
 {
@@ -51,6 +61,23 @@ std::string LayerLabel(const std::string& group)
         return "global";
     }
     return "layer " + group.substr(1);
+}
+
+/// A Mermaid node id. Dots are not allowed in a bare id, so they become underscores.
+std::string MermaidId(const std::string& name)
+{
+    std::string id;
+    id.reserve(name.size() + 1);
+    for (char c : name)
+    {
+        const auto u = static_cast<unsigned char>(c);
+        id.push_back(std::isalnum(u) != 0 ? c : '_');
+    }
+    if (!id.empty() && std::isdigit(static_cast<unsigned char>(id[0])))
+    {
+        id = "n_" + id;
+    }
+    return id;
 }
 
 void EmitAttributes(std::ostream& out, int fontSize)
@@ -101,10 +128,8 @@ void EmitFull(std::ostream& out, const std::vector<std::string>& nodes, const st
 
 /// Layer 0 plus its immediate neighbours only (the input it reads and the layer it feeds), not the
 /// transitive closure, which would be the whole graph.
-void EmitLayer0(std::ostream& out, const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
+std::set<std::string> Layer0Keep(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
 {
-    EmitAttributes(out, 10);
-
     std::set<std::string> keep;
     for (const std::string& node : nodes)
     {
@@ -124,6 +149,13 @@ void EmitLayer0(std::ostream& out, const std::vector<std::string>& nodes, const 
             keep.insert(edge.from);
         }
     }
+    return keep;
+}
+
+void EmitLayer0(std::ostream& out, const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
+{
+    EmitAttributes(out, 10);
+    const std::set<std::string> keep = Layer0Keep(nodes, edges);
 
     for (const std::string& node : nodes)
     {
@@ -205,6 +237,98 @@ void WriteDotFile(const std::string& path, const std::string& body)
     out << body;
     out << "}\n";
 }
+
+/// Mermaid flowchart for the overview: layers as single nodes.
+std::string MermaidOverview(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
+{
+    std::ostringstream out;
+    out << "flowchart LR\n";
+
+    std::vector<std::string> groups;
+    std::set<std::string> seen;
+    for (const std::string& node : nodes)
+    {
+        const std::string group = GroupOf(node);
+        if (seen.insert(group).second)
+        {
+            groups.push_back(group);
+        }
+    }
+    for (const std::string& group : groups)
+    {
+        if (!group.empty())
+        {
+            out << "  " << MermaidId(group) << "[\"" << LayerLabel(group) << "\"]\n";
+        }
+    }
+    for (const std::string& node : nodes)
+    {
+        if (GroupOf(node).empty())
+        {
+            out << "  " << MermaidId(node) << "[\"" << node << "\"]\n";
+        }
+    }
+
+    std::set<std::pair<std::string, std::string>> collapsed;
+    std::map<std::pair<std::string, std::string>, size_t> counts;
+    for (const GraphDotEdge& edge : edges)
+    {
+        const std::string from = GroupOf(edge.from).empty() ? edge.from : GroupOf(edge.from);
+        const std::string to = GroupOf(edge.to).empty() ? edge.to : GroupOf(edge.to);
+        if (from == to)
+        {
+            continue;
+        }
+        collapsed.insert({from, to});
+        ++counts[{from, to}];
+    }
+    for (const auto& [from, to] : collapsed)
+    {
+        out << "  " << MermaidId(from) << " -->|x" << counts[{from, to}] << "| " << MermaidId(to) << "\n";
+    }
+    return out.str();
+}
+
+/// Mermaid flowchart for layer 0, with its input and the next layer as context.
+std::string MermaidLayer0(const std::vector<std::string>& nodes, const std::vector<GraphDotEdge>& edges)
+{
+    std::ostringstream out;
+    out << "flowchart LR\n";
+
+    const std::set<std::string> keep = Layer0Keep(nodes, edges);
+
+    out << "  subgraph layer0[\"layer 0\"]\n    direction LR\n";
+    for (const std::string& node : nodes)
+    {
+        if (keep.count(node) != 0 && GroupOf(node) == "b0")
+        {
+            out << "    " << MermaidId(node) << "[\"" << ShortLabel(node, "b0") << "\"]\n";
+        }
+    }
+    out << "  end\n";
+    for (const std::string& node : nodes)
+    {
+        if (keep.count(node) != 0 && GroupOf(node) != "b0")
+        {
+            out << "  " << MermaidId(node) << "[\"" << node << "\"]\n";
+        }
+    }
+    for (const GraphDotEdge& edge : edges)
+    {
+        const bool touchesLayer0 = GroupOf(edge.from) == "b0" || GroupOf(edge.to) == "b0";
+        if (touchesLayer0 && keep.count(edge.from) != 0 && keep.count(edge.to) != 0)
+        {
+            out << "  " << MermaidId(edge.from) << " --> " << MermaidId(edge.to) << "\n";
+        }
+    }
+    return out.str();
+}
+
+void WriteTextFile(const std::string& path, const std::string& text)
+{
+    std::ofstream out(path);
+    out << text;
+}
 }  // namespace
 
 void WriteGraphDot(const std::string& path, const std::vector<std::string>& nodes,
@@ -225,5 +349,24 @@ void WriteGraphDot(const std::string& path, const std::vector<std::string>& node
         EmitLayer0(body, nodes, edges);
         WriteDotFile(path + "-layer0", body.str());
     }
+
+    // Mermaid: GitHub renders it natively, so the raw files and a markdown page are written too.
+    const std::string overview = MermaidOverview(nodes, edges);
+    const std::string layer0 = MermaidLayer0(nodes, edges);
+    WriteTextFile(path + "-overview.mmd", overview);
+    WriteTextFile(path + "-layer0.mmd", layer0);
+
+    std::ostringstream page;
+    page << "# muyo-llm graph model\n\n";
+    page << "Generated from the node and dependency declarations before `Build()` by\n";
+    page << "`MUYO_RG_DOT=<path> ./muyo_llm --forward <gguf> -p hi` (see `docs/graph/README.md`).\n";
+    page << "GitHub renders the Mermaid below natively.\n\n";
+    page << "## Overview\n\nEach layer is one node; the label on an edge is how many authored edges it\n";
+    page << "collapses. `embed → layer 0 … layer 23 → final_norm → lm_head → argmax`.\n\n";
+    page << "```mermaid\n" << overview << "```\n\n";
+    page << "## Layer 0\n\nThe 18-node transformer unit, with the embedding it reads and the next layer it\n";
+    page << "feeds as context.\n\n";
+    page << "```mermaid\n" << layer0 << "```\n";
+    WriteTextFile(path + ".md", page.str());
 }
 }  // namespace muyo_llm
