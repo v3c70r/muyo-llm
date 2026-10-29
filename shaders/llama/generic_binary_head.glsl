@@ -1,5 +1,7 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 #include "utils.glsl"
 #if RMS_NORM_ROPE_FUSION
@@ -17,19 +19,37 @@ layout (push_constant) uniform parameter
 #if RMS_NORM_ROPE_FUSION
     rope_params rope;
 #endif
+    // Descriptor-heap indices, in the order of `llama_add_bindings` (A, B, D, PARTIAL_SUMS). The
+    // graph has no descriptor sets, so the node fills these from
+    // RenderGraphNodeContext::GetHeapIndex and records them as push data. At the end, so the
+    // rope_params offset is unchanged.
+    uint heap[4];
 } p;
 
 #if !RMS_NORM_ROPE_FUSION
-layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (descriptor_heap) readonly buffer A {A_TYPE data_a[];} aHeap[];
 #if defined(A_TYPE_PACKED16)
-layout (binding = 0) readonly buffer A_PACKED16 {A_TYPE_PACKED16 data_a_packed16[];};
+layout (descriptor_heap) readonly buffer A_PACKED16 {A_TYPE_PACKED16 data_a_packed16[];} aPacked16Heap[];
 #endif
 #if defined(A_TYPE_PACKED32)
-layout (binding = 0) readonly buffer A_PACKED32 {A_TYPE_PACKED32 data_a_packed32[];};
+layout (descriptor_heap) readonly buffer A_PACKED32 {A_TYPE_PACKED32 data_a_packed32[];} aPacked32Heap[];
 #endif
 
-layout (binding = 1) readonly buffer B {B_TYPE data_b[];};
-layout (binding = 2) writeonly buffer D {D_TYPE data_d[];};
+layout (descriptor_heap) readonly buffer B {B_TYPE data_b[];} bHeap[];
+layout (descriptor_heap) writeonly buffer D {D_TYPE data_d[];} dHeap[];
+
+// Keep the llama.cpp shader bodies unchanged: every `data_*` name resolves to the descriptor the
+// node resolved for this dispatch. All heap arrays alias one resource heap, so the index for a
+// binding addresses the same descriptor through each declaration of that buffer.
+#define data_a aHeap[p.heap[0]].data_a
+#define data_b bHeap[p.heap[1]].data_b
+#define data_d dHeap[p.heap[2]].data_d
+#if defined(A_TYPE_PACKED16)
+#define data_a_packed16 aPacked16Heap[p.heap[0]].data_a_packed16
+#endif
+#if defined(A_TYPE_PACKED32)
+#define data_a_packed32 aPacked32Heap[p.heap[0]].data_a_packed32
+#endif
 #endif
 
 // true if src0/src1 are the same shape and the indices can be reused without additional modulus

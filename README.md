@@ -14,12 +14,12 @@ architecture validation first and an inference engine second.
 
 ## Status
 
-**M0 complete.** A headless host (device, allocator, resource and descriptor managers, no window)
+**M0 complete.** A headless host (device, allocator, resource manager, descriptor heap, no window)
 runs one graph-owned storage buffer through a compute node and verifies the result on the host:
 
 ```
 $ cd build && ./muyo_llm --smoke
-[device] AMD Radeon Graphics (Vulkan 1.4.313), dedicated compute family present
+[device] llvmpipe (LLVM 21.1.8, 256 bits) (Vulkan 1.4.354), single queue family
 [device] cooperative matrix: available
 [graph] execution order: SmokeFill
 [smoke] OK: 1024 elements written by the compute node and verified on the host
@@ -163,37 +163,58 @@ long-running consumer the declaration-level DOT is the thing to read.
 ## Build
 
 Muyo is embedded as a submodule; a development checkout can be substituted with
-`-DMUYO_SOURCE_DIR`. The Vulkan SDK must be on the environment, and configure needs network (VMA is
-fetched).
+`-DMUYO_SOURCE_DIR`. The Vulkan SDK (1.4.363 or newer) must be on the environment - **source its
+`setup-env.sh`**, not just install it - because the graph is descriptor-heap-only: the headers must
+define `VK_EXT_descriptor_heap`, `glslc` must accept `GL_EXT_descriptor_heap`, and running needs the
+SDK's loader and validation layers (an older loader rejects the heap structures). Configure also
+needs network (VMA is fetched).
 
 ```bash
+source "$VULKAN_SDK/setup-env.sh"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DMUYO_SOURCE_DIR=/path/to/Muyo
 cmake --build build --target muyo_llm -j"$(nproc)"
 cd build && ./muyo_llm --smoke        # the graph loads shaders relative to the working directory
 ```
+
+A device must expose `VK_EXT_descriptor_heap` and `VK_KHR_shader_untyped_pointers`; `HeadlessContext`
+requests both and fails at creation with the missing extension named. llvmpipe exposes them and is
+what the checks below run on.
 
 `scripts/sanity.sh` runs the format check and the build + smoke; `scripts/sanity.sh sanitize` adds
 ASan/UBSan.
 
 ## Upstream state
 
-**Validated against Muyo `f3ecbf1`** ("RenderGraph: draw an execution as lanes, with the geometry
-tested and the drawing thin"). Rebuilt and re-ran `scripts/sanity.sh` (all 12 modes, validation on)
-and `scripts/verify-forward.sh` (greedy tokens + token ids vs llama.cpp) with no compile error, no
-deprecation warning and no named runtime failure.
+**Validated against Muyo `b7ce1fe`** ("docs: reconcile the roadmaps and board after B2"). Rebuilt and
+re-ran `scripts/sanity.sh` (all 12 modes, validation on) with no compile error and no named runtime
+failure. `scripts/verify-forward.sh` is **not** green here: the 0.5B model's embedding tensor is
+272 MB and this machine's llvmpipe reports `maxStorageBufferRange = 128 MB`, so the descriptor write
+is rejected. The same run fails identically on the previous pin (`64947cd`), so it is a device limit,
+not the migration; it is recorded as F18.
 
-Since the previously recorded pin `fe40dd3` (37 commits), the consumer-relevant change is **#16's
-transient aliasing** (`36d8ab2` … `9ef01ac`, with lifetime enforcement in `27eb53e`) — a graph-owned
-transient is no longer a resource-manager resource (`ResolveResource` is the lookup) and its content
-is valid only from its first write within one execution, so every resource whose content comes from
-the host or is read back by the host is now `Persistent`. The finding, and the evidence that the
-aliasing works on the real workload, is `docs/Findings.md` F14. Upstream also landed the descriptor
-work (#107/#108/#109), a large set of `Build()` declaration checks (#126/#128/#129/#131/#136/#138/
-#140/#143/#147), barrier derivation from the uses (#12, #160), `HOST_WRITE` as a declaration (#152),
-the execution trace and lane view (#165/#166/#168), `#55`'s `Build()` diagnostics, the lavapipe CI
-gate (#22), and the renderer's present path. None of it broke this consumer.
+Since the previous pin `64947cd` (44 commits), the consumer-relevant change is the **descriptor-heap
+track** (B0-B2: `82a10a0` … `1896bae`, with the graph made heap-only by `2ef6505`): the graph path no
+longer has descriptor sets, descriptor-set layouts, descriptor pools or a pipeline layout. A node's
+resources are reached through `layout(descriptor_heap)` arrays indexed by words the node supplies,
+and the node records its push block with `vkCmdPushDataEXT` (`ctx.PushData`); every GPU node needs
+the injected `DescriptorHeapService`, and the device needs `VK_EXT_descriptor_heap` plus
+`VK_KHR_shader_untyped_pointers`. The same window also landed per-execution transient arenas (#40,
+`1896bae`), shared pipeline/shader caches (#17, `650381b`/`5b8cc63`/`658dfe3`), the
+`shader64BitIndexing`-aware descriptor range work, and a large tooling/warnings pass. This consumer
+was migrated in the same pass: every dispatched shader indexes a `heap[]` table in its push block,
+every node fills it from `ctx.GetHeapIndex`, and `src/GraphServices.h` injects the heap service. The
+findings this produced are F15-F19 in `docs/Findings.md`; the workarounds are the capability
+strip in `tools/strip_nonuniform_capability.py`, the explicit
+`VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` on every buffer, and a model-sized
+`DescriptorHeapService::Config` in `HeadlessContext`.
 
-The consumer report for the aliasing row was
+The previous pin `64947cd` was the ThreadSanitizer scoped-sanity change (`0a9bd55` in master).
+The pin before it, `f3ecbf1`, landed **#16's transient aliasing** (`36d8ab2` … `9ef01ac`, with
+lifetime enforcement in `27eb53e`) — a graph-owned transient is no longer a resource-manager resource
+(`ResolveResource` is the lookup) and its content is valid only from its first write within one
+execution, so every resource whose content comes from the host or is read back by the host is now
+`Persistent`. The finding, and the evidence that the aliasing works on the real workload, is
+`docs/Findings.md` F14. The consumer report for the aliasing row was
 [PR #114](https://github.com/v3c70r/Muyo/pull/114) (merged `33e9346`).
 
 The previous pin, `fe40dd3`, added the injected graph services (`0294326`, the injection slice of

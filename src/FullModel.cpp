@@ -17,6 +17,7 @@
 #include "Gguf.h"
 #include "GraphDot.h"
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -35,7 +36,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -124,8 +124,7 @@ ResourceUse MakeUse(const std::string& handle, ResourceIOType io, uint32_t bindi
     return ResourceUse{.handle = ResourceHandle(handle),
                        .io = io,
                        .usage = ResourceUsage::STORAGE_BUFFER,
-                       .kind = ResourceKind::BUFFER,
-                       .descriptorBinding = DescriptorBinding{.set = 0, .binding = binding}};
+                       .kind = ResourceKind::BUFFER};
 }
 
 /// `mul_mat_vec`'s full push-constant state. The dispatch is fixed unless `keysSoFar` is set, in
@@ -147,6 +146,12 @@ struct MatVecSpec
     uint32_t dispatchX = 0;
     uint32_t dispatchY = 1;
     const uint32_t* keysSoFar = nullptr;  ///< When set, `dispatchX = *keysSoFar + 1` (keys written so far).
+    /// Resource handles in `llama_mat_vec_bindings` order, resolved to heap indices at record time.
+    std::string handleA;
+    std::string handleB;
+    std::string handleD;
+    std::string handleFuse0;
+    std::string handleFuse1;
 };
 
 auto MatVecExecute(const MatVecSpec& spec)
@@ -167,8 +172,17 @@ auto MatVecExecute(const MatVecSpec& spec)
         pushConstants.ne12 = spec.ne12;
         pushConstants.broadcast2 = spec.broadcast2;
         pushConstants.broadcast3 = spec.broadcast3;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::A, ctx, spec.handleA.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::B, ctx, spec.handleB.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::D, ctx, spec.handleD.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE0, ctx, spec.handleFuse0.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE1, ctx, spec.handleFuse1.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         const uint32_t x = spec.keysSoFar != nullptr ? *spec.keysSoFar + 1 : spec.dispatchX;
         vkCmdDispatch(ctx.commandBuffer, x, spec.dispatchY, 1);
     };
@@ -185,6 +199,12 @@ struct RopeSpec
     uint32_t destinationOffset = 0;  ///< `dOffset`, used when `position` is null.
     float freqBase = 10000.0F;
     const uint32_t* position = nullptr;
+    /// Resource handles in `llama_rope_bindings` order.
+    std::string handleX;
+    std::string handleY;
+    std::string handleZ;
+    std::string handleD;
+    std::string handleI;
 };
 
 auto RopeExecute(const RopeSpec& spec)
@@ -205,16 +225,25 @@ auto RopeExecute(const RopeSpec& spec)
         pushConstants.nb01 = spec.inputRowStride;
         pushConstants.nb11 = spec.outputRowStride;
         pushConstants.dOffset = spec.position != nullptr ? *spec.position * spec.headDim : spec.destinationOffset;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_rope_bindings::X, ctx, spec.handleX.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_rope_bindings::Y, ctx, spec.handleY.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_rope_bindings::Z, ctx, spec.handleZ.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_rope_bindings::D, ctx, spec.handleD.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_rope_bindings::I, ctx, spec.handleI.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, spec.rows, 1, 1);
     };
 }
 
 /// `rms_norm.comp` over one `length`-channel row.
-auto RmsNormExecute(uint32_t length, float epsilon)
+auto RmsNormExecute(uint32_t length, float epsilon, const std::string& a, const std::string& b, const std::string& d)
 {
-    return [length, epsilon](RenderGraphNodeContext& ctx)
+    return [length, epsilon, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaAddPushConstants pushConstants{};
         pushConstants.ne = length;
@@ -240,16 +269,19 @@ auto RmsNormExecute(uint32_t length, float epsilon)
         pushConstants.nb22 = length;
         pushConstants.nb23 = length;
         pushConstants.param1 = epsilon;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, a.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, b.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, d.c_str(), ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
     };
 }
 
 /// `add.comp` for two equal-length F32 operands.
-auto AddExecute(uint32_t length)
+auto AddExecute(uint32_t length, const std::string& a, const std::string& b, const std::string& d,
+                const std::string& partial)
 {
-    return [length](RenderGraphNodeContext& ctx)
+    return [length, a, b, d, partial](RenderGraphNodeContext& ctx)
     {
         LlamaAddPushConstants pushConstants{};
         pushConstants.ne = length;
@@ -277,16 +309,20 @@ auto AddExecute(uint32_t length)
         pushConstants.nb21 = length;
         pushConstants.nb22 = length;
         pushConstants.nb23 = length;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, a.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, b.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, d.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::PARTIAL_SUMS, ctx, partial.c_str(),
+                     ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, (length + 511) / 512, 1);
     };
 }
 
 /// `swiglu.comp` in split mode (separate gate and up operands) over `count` elements.
-auto SwigluExecute(uint32_t count)
+auto SwigluExecute(uint32_t count, const std::string& a, const std::string& b, const std::string& d)
 {
-    return [count](RenderGraphNodeContext& ctx)
+    return [count, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaGluPushConstants pushConstants{};
         pushConstants.N = count;
@@ -320,17 +356,20 @@ auto SwigluExecute(uint32_t count)
                 pushConstants.ne2_012L);
         fastDiv(pushConstants.ne21 * pushConstants.ne20, pushConstants.ne2_01mp, pushConstants.ne2_01L);
         fastDiv(pushConstants.ne20, pushConstants.ne2_0mp, pushConstants.ne2_0L);
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_glu_bindings::A, ctx, a.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_glu_bindings::B, ctx, b.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_glu_bindings::D, ctx, d.c_str(), ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, (count + 511) / 512, 1);
     };
 }
 
 /// `soft_max.comp` over `rows` rows of `columns` with no mask. `columns` is the full cache length,
 /// so the pre-masked tail contributes `exp(-1e30 - max) = 0`.
-auto SoftMaxExecute(uint32_t rows, uint32_t columns, float scale)
+auto SoftMaxExecute(uint32_t rows, uint32_t columns, float scale, const std::string& x, const std::string& y,
+                    const std::string& z, const std::string& d)
 {
-    return [rows, columns, scale](RenderGraphNodeContext& ctx)
+    return [rows, columns, scale, x, y, z, d](RenderGraphNodeContext& ctx)
     {
         LlamaSoftMaxPushConstants pushConstants{};
         pushConstants.KX = columns;
@@ -342,8 +381,11 @@ auto SoftMaxExecute(uint32_t rows, uint32_t columns, float scale)
         pushConstants.ne13 = 1;
         pushConstants.scale = scale;
         pushConstants.nrowsX = rows;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::X, ctx, x.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Y, ctx, y.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Z, ctx, z.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::D, ctx, d.c_str(), ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, rows, 1, 1);
     };
 }
@@ -359,8 +401,9 @@ struct CopyPushConstants
     float param1, param2, param3, param4;
     uint32_t ne0_012mp, ne0_01mp, ne0_0mp, ne0_Ls;
     uint32_t ne1_012mp, ne1_01mp, ne1_0mp, ne1_Ls;
+    uint32_t heap[2];
 };
-static_assert(sizeof(CopyPushConstants) == 30 * sizeof(uint32_t),
+static_assert(sizeof(CopyPushConstants) == 32 * sizeof(uint32_t),
               "CopyPushConstants no longer matches generic_unary_head.glsl's `parameter` block");
 
 void InitFastDiv(uint32_t d, uint32_t& mp, uint32_t& l)
@@ -378,9 +421,10 @@ void InitFastDiv(uint32_t d, uint32_t& mp, uint32_t& l)
 /// The source is the flat value vector. The destination is described as `[headDim][maxSeq][kvHeads]`
 /// with strides `[maxSeq][headDim*maxSeq][0]`, so `dst_idx(idx) = (idx/headDim)*(headDim*maxSeq) +
 /// (idx%headDim)*maxSeq`, and `misalign_offsets` carries the position.
-auto CopyValueColumnExecute(uint32_t kvDim, uint32_t headDim, uint32_t maxSeq, const uint32_t* position)
+auto CopyValueColumnExecute(uint32_t kvDim, uint32_t headDim, uint32_t maxSeq, const uint32_t* position,
+                            const std::string& src, const std::string& dst)
 {
-    return [kvDim, headDim, maxSeq, position](RenderGraphNodeContext& ctx)
+    return [kvDim, headDim, maxSeq, position, src, dst](RenderGraphNodeContext& ctx)
     {
         CopyPushConstants pushConstants{};
         pushConstants.ne = kvDim;
@@ -412,18 +456,19 @@ auto CopyValueColumnExecute(uint32_t kvDim, uint32_t headDim, uint32_t maxSeq, c
         uint32_t s2 = 0;
         InitFastDiv(pushConstants.ne02 * pushConstants.ne01 * pushConstants.ne00, pushConstants.ne0_012mp, s2);
         pushConstants.ne0_Ls = s2 | (s1 << 8) | (s0 << 16);
+        SetHeapIndex(pushConstants.heap, llama_copy_bindings::A, ctx, src.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_copy_bindings::D, ctx, dst.c_str(), ResourceUsage::STORAGE_BUFFER);
 
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
     };
 }
 
 /// `get_rows.comp`: gather one `embedDim`-channel row `indices[0]` out of a `[vocab][embedDim]`
 /// weight, as an F32 row.
-auto GetRowsExecute(uint32_t embedDim, uint32_t vocab)
+auto GetRowsExecute(uint32_t embedDim, uint32_t vocab, const std::string& a, const std::string& b, const std::string& d)
 {
-    return [embedDim, vocab](RenderGraphNodeContext& ctx)
+    return [embedDim, vocab, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaAddPushConstants pushConstants{};
         pushConstants.ne = embedDim * vocab;
@@ -451,22 +496,25 @@ auto GetRowsExecute(uint32_t embedDim, uint32_t vocab)
         pushConstants.nb21 = embedDim;
         pushConstants.nb22 = embedDim;
         pushConstants.nb23 = embedDim;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, a.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, b.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, d.c_str(), ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, (embedDim + 511) / 512, 1, 1);
     };
 }
 
 /// `argmax.comp` over the logit row, then a compute-to-host barrier so the caller can map the token.
-auto ArgmaxExecute(uint32_t vocab)
+auto ArgmaxExecute(uint32_t vocab, const std::string& a, const std::string& d)
 {
-    return [vocab](RenderGraphNodeContext& ctx)
+    return [vocab, a, d](RenderGraphNodeContext& ctx)
     {
         LlamaGenericHeadPushConstants pushConstants{};
         pushConstants.KX = vocab;
         pushConstants.KY = 1;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_argmax_bindings::A, ctx, a.c_str(), ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_argmax_bindings::D, ctx, d.c_str(), ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
 
         VkMemoryBarrier2 toHost{};
@@ -526,7 +574,8 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             builder.AddDependency(from, to);
         };
 
-        const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        const VkBufferUsageFlags storage =
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
         // When MUYO_DUMP is set the intermediates are made host-visible so they can be mapped for a
         // comparison; the weights stay device-local either way.
         const bool hostVisible = std::getenv("MUYO_DUMP") != nullptr;
@@ -534,7 +583,9 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         {
             return BufferResourceDesc{.count = count,
                                       .stride = stride,
-                                      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                      .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                               VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                                               VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                       .memoryProperties = VMA_MEMORY_USAGE_GPU_ONLY,
                                       // Host-uploaded once and read by a node for the life of the graph. A transient
                                       // may share a block with another resource whose live range does not overlap
@@ -731,7 +782,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                   MakeUse(xn, ResourceIOType::READ_WRITE, llama_add_bindings::D)},
                  .shaderNames = {"rms_norm_f32.comp"},
                  .specializationConstants = {{.id = 1, .value = 1}},
-                 .execute = RmsNormExecute(config.hidden, config.rmsEps)});
+                 .execute = RmsNormExecute(config.hidden, config.rmsEps, input, LayerName(layer, "attn_norm"), xn)});
 
             const auto projection = [&](const std::string& node, const std::string& weight, const std::string& bias,
                                         const std::string& destination, uint32_t rows)
@@ -743,6 +794,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                 spec.strideB = config.hidden;
                 spec.dispatchX = rows;
                 spec.fusionFlags = llama_mat_vec_fusion::BIAS0;
+                spec.handleA = weight;
+                spec.handleB = xn;
+                spec.handleD = destination;
+                spec.handleFuse0 = bias;
+                spec.handleFuse1 = "partial";
                 addNode({.nodeName = node,
                          .queueType = QueueType::COMPUTE,
                          .resourceUses = gemvUses(weight, xn, destination, bias, "partial"),
@@ -766,7 +822,12 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                                      .headDim = config.headDim,
                                                      .inputRowStride = config.headDim,
                                                      .outputRowStride = config.headDim,
-                                                     .freqBase = config.ropeBase})});
+                                                     .freqBase = config.ropeBase,
+                                                     .handleX = q,
+                                                     .handleY = "rope_pos",
+                                                     .handleZ = "rope_scratch",
+                                                     .handleD = qr,
+                                                     .handleI = "rope_scratch"})});
 
             addNode({.nodeName = kRope,
                      .queueType = QueueType::COMPUTE,
@@ -781,14 +842,20 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                                      .inputRowStride = config.headDim,
                                                      .outputRowStride = config.headDim * K_MAX_SEQ,
                                                      .freqBase = config.ropeBase,
-                                                     .position = &position})});
+                                                     .position = &position,
+                                                     .handleX = kvec,
+                                                     .handleY = "rope_pos",
+                                                     .handleZ = "rope_scratch",
+                                                     .handleD = kcache,
+                                                     .handleI = "rope_scratch"})});
 
-            addNode({.nodeName = vCopy,
-                     .queueType = QueueType::COMPUTE,
-                     .resourceUses = {MakeUse(vvec, ResourceIOType::READ, 0),
-                                      MakeUse(vcache, ResourceIOType::READ_WRITE, 1)},
-                     .shaderNames = {"cpy_f32_f32.comp"},
-                     .execute = CopyValueColumnExecute(config.kvDim, config.headDim, K_MAX_SEQ, &position)});
+            addNode(
+                {.nodeName = vCopy,
+                 .queueType = QueueType::COMPUTE,
+                 .resourceUses = {MakeUse(vvec, ResourceIOType::READ, 0),
+                                  MakeUse(vcache, ResourceIOType::READ_WRITE, 1)},
+                 .shaderNames = {"cpy_f32_f32.comp"},
+                 .execute = CopyValueColumnExecute(config.kvDim, config.headDim, K_MAX_SEQ, &position, vvec, vcache)});
 
             MatVecSpec scoresSpec;
             scoresSpec.ncols = config.headDim;
@@ -804,6 +871,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             scoresSpec.broadcast3 = 1;
             scoresSpec.dispatchY = config.heads;
             scoresSpec.keysSoFar = &position;  // Dispatch grows with the cache.
+            scoresSpec.handleA = kcache;
+            scoresSpec.handleB = qr;
+            scoresSpec.handleD = scores;
+            scoresSpec.handleFuse0 = "partial";
+            scoresSpec.handleFuse1 = "partial";
             addNode({.nodeName = attnScores,
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses(kcache, qr, scores, "partial", "partial"),
@@ -820,7 +892,8 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                      .shaderNames = {"soft_max_f32.comp"},
                      .specializationConstants = {{.id = llama_soft_max_spec_constants::BLOCK_SIZE,
                                                   .value = K_SOFT_MAX_BLOCK_SIZE}},
-                     .execute = SoftMaxExecute(config.heads, K_MAX_SEQ, attentionScale)});
+                     .execute = SoftMaxExecute(config.heads, K_MAX_SEQ, attentionScale, scores, "softmax_mask",
+                                               "softmax_sinks", probs)});
 
             MatVecSpec valueSpec;
             valueSpec.ncols = K_MAX_SEQ;
@@ -836,6 +909,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             valueSpec.broadcast3 = 1;
             valueSpec.dispatchX = config.headDim;
             valueSpec.dispatchY = config.heads;
+            valueSpec.handleA = vcache;
+            valueSpec.handleB = probs;
+            valueSpec.handleD = attnOut;
+            valueSpec.handleFuse0 = "partial";
+            valueSpec.handleFuse1 = "partial";
             addNode({.nodeName = attnOutput,
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses(vcache, probs, attnOut, "partial", "partial"),
@@ -849,6 +927,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             outputSpec.strideA = config.queryDim;
             outputSpec.strideB = config.queryDim;
             outputSpec.dispatchX = config.hidden;
+            outputSpec.handleA = LayerName(layer, "wo");
+            outputSpec.handleB = attnOut;
+            outputSpec.handleD = o;
+            outputSpec.handleFuse0 = "partial";
+            outputSpec.handleFuse1 = "partial";
             addNode({.nodeName = oProj,
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses(LayerName(layer, "wo"), attnOut, o, "partial", "partial"),
@@ -864,7 +947,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                       MakeUse("partial", ResourceIOType::READ_WRITE, llama_add_bindings::PARTIAL_SUMS)},
                      .shaderNames = {"add_f32.comp"},
                      .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
-                     .execute = AddExecute(config.hidden)});
+                     .execute = AddExecute(config.hidden, input, o, x1, "partial")});
 
             addNode(
                 {.nodeName = postNorm,
@@ -874,7 +957,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                   MakeUse(xn2, ResourceIOType::READ_WRITE, llama_add_bindings::D)},
                  .shaderNames = {"rms_norm_f32.comp"},
                  .specializationConstants = {{.id = 1, .value = 1}},
-                 .execute = RmsNormExecute(config.hidden, config.rmsEps)});
+                 .execute = RmsNormExecute(config.hidden, config.rmsEps, x1, LayerName(layer, "ffn_norm"), xn2)});
 
             MatVecSpec mlpSpec;
             mlpSpec.ncols = config.hidden;
@@ -882,18 +965,26 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             mlpSpec.strideA = config.hidden;
             mlpSpec.strideB = config.hidden;
             mlpSpec.dispatchX = config.feedForward;
+            mlpSpec.handleA = LayerName(layer, "wgate");
+            mlpSpec.handleB = xn2;
+            mlpSpec.handleD = gate;
+            mlpSpec.handleFuse0 = "partial";
+            mlpSpec.handleFuse1 = "partial";
             addNode({.nodeName = gateProj,
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses(LayerName(layer, "wgate"), xn2, gate, "partial", "partial"),
                      .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
                      .execute = MatVecExecute(mlpSpec)});
+            MatVecSpec upSpec = mlpSpec;
+            upSpec.handleA = LayerName(layer, "wup");
+            upSpec.handleD = up;
             addNode({.nodeName = upProj,
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses(LayerName(layer, "wup"), xn2, up, "partial", "partial"),
                      .shaderNames = {"mul_mat_vec_f16_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = MatVecExecute(mlpSpec)});
+                     .execute = MatVecExecute(upSpec)});
 
             addNode({.nodeName = swiglu,
                      .queueType = QueueType::COMPUTE,
@@ -901,7 +992,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                       MakeUse(up, ResourceIOType::READ, llama_glu_bindings::B),
                                       MakeUse(act, ResourceIOType::READ_WRITE, llama_glu_bindings::D)},
                      .shaderNames = {"swiglu_f32.comp"},
-                     .execute = SwigluExecute(config.feedForward)});
+                     .execute = SwigluExecute(config.feedForward, gate, up, act)});
 
             MatVecSpec downSpec;
             downSpec.ncols = config.feedForward;
@@ -909,6 +1000,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
             downSpec.strideA = config.feedForward;
             downSpec.strideB = config.feedForward;
             downSpec.dispatchX = config.hidden;
+            downSpec.handleA = LayerName(layer, "wdown");
+            downSpec.handleB = act;
+            downSpec.handleD = mlpOut;
+            downSpec.handleFuse0 = "partial";
+            downSpec.handleFuse1 = "partial";
             addNode({.nodeName = downProj,
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses(LayerName(layer, "wdown"), act, mlpOut, "partial", "partial"),
@@ -924,7 +1020,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                       MakeUse("partial", ResourceIOType::READ_WRITE, llama_add_bindings::PARTIAL_SUMS)},
                      .shaderNames = {"add_f32.comp"},
                      .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
-                     .execute = AddExecute(config.hidden)});
+                     .execute = AddExecute(config.hidden, x1, mlpOut, out, "partial")});
 
             addDep(preNorm, qProj);
             addDep(preNorm, kProj);
@@ -958,7 +1054,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                                   MakeUse("token_id", ResourceIOType::READ, llama_add_bindings::B),
                                   MakeUse("embedding", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
                  .shaderNames = {"get_rows_f16_f32.comp"},
-                 .execute = GetRowsExecute(config.hidden, config.vocab)});
+                 .execute = GetRowsExecute(config.hidden, config.vocab, "token_embd", "token_id", "embedding")});
 
         addNode(
             {.nodeName = "final_norm",
@@ -968,7 +1064,8 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                               MakeUse("final_norm", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
              .shaderNames = {"rms_norm_f32.comp"},
              .specializationConstants = {{.id = 1, .value = 1}},
-             .execute = RmsNormExecute(config.hidden, config.rmsEps)});
+             .execute = RmsNormExecute(config.hidden, config.rmsEps, LayerName(config.layers - 1, "out"), "output_norm",
+                                       "final_norm")});
 
         MatVecSpec lmSpec;
         lmSpec.ncols = config.hidden;
@@ -976,6 +1073,11 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
         lmSpec.strideA = config.hidden;
         lmSpec.strideB = config.hidden;
         lmSpec.dispatchX = config.vocab;
+        lmSpec.handleA = "output";
+        lmSpec.handleB = "final_norm";
+        lmSpec.handleD = "logits";
+        lmSpec.handleFuse0 = "partial";
+        lmSpec.handleFuse1 = "partial";
         addNode({.nodeName = "lm_head",
                  .queueType = QueueType::COMPUTE,
                  .resourceUses = gemvUses("output", "final_norm", "logits", "partial", "partial"),
@@ -990,7 +1092,7 @@ int RunFullModel(const std::string& ggufPath, const ForwardOptions& options)
                               MakeUse("next_token", ResourceIOType::READ_WRITE, llama_argmax_bindings::D)},
              .shaderNames = {"argmax_f32.comp"},
              .specializationConstants = {{.id = llama_argmax_spec_constants::BLOCK_SIZE, .value = K_ARGMAX_BLOCK_SIZE}},
-             .execute = ArgmaxExecute(config.vocab)});
+             .execute = ArgmaxExecute(config.vocab, "logits", "next_token")});
 
         addDep("embed", LayerName(0, "pre_norm"));
         addDep(LayerName(config.layers - 1, "residual2"), "final_norm");

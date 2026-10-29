@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -22,7 +23,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -57,7 +57,7 @@ int RunArgmax()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -69,8 +69,6 @@ int RunArgmax()
     builder.AddResource("Logits", buffer(K_LOGIT_COUNT, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("TokenIndex", buffer(1, sizeof(int32_t), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-
     RenderGraphNodeCreateInfo argmaxPass = {
         .nodeName = "LlamaArgmax",
         .queueType = QueueType::COMPUTE,
@@ -79,13 +77,11 @@ int RunArgmax()
                 ResourceUse{.handle = ResourceHandle("Logits"),
                             .io = ResourceIOType::READ,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_argmax_bindings::A)},
+                            .kind = ResourceKind::BUFFER},
                 ResourceUse{.handle = ResourceHandle("TokenIndex"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_argmax_bindings::D)},
+                            .kind = ResourceKind::BUFFER},
             },
         .shaderNames = {"argmax_f32.comp"},
         .specializationConstants = {{.id = llama_argmax_spec_constants::BLOCK_SIZE, .value = K_BLOCK_SIZE}},
@@ -99,8 +95,10 @@ int RunArgmax()
             pushConstants.param2 = 0.0F;
             pushConstants.param3 = 0.0F;
             pushConstants.param4 = 0.0F;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_argmax_bindings::A, ctx, "Logits", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_argmax_bindings::D, ctx, "TokenIndex",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
             // One workgroup per row.
             vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);

@@ -1,6 +1,8 @@
-#version 450
+#version 460
 
 #extension GL_EXT_control_flow_attributes : enable
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 layout (push_constant) uniform parameter
 {
@@ -21,6 +23,8 @@ layout (push_constant) uniform parameter
     uint n_head_log2;
     uint nrows_x;
     uint has_sinks;
+    // Descriptor-heap indices in `llama_soft_max_bindings` order (X, Y, Z, D).
+    uint heap[4];
 } p;
 
 #include "types.glsl"
@@ -28,10 +32,15 @@ layout (push_constant) uniform parameter
 layout(constant_id = 0) const uint BLOCK_SIZE = 32;
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-layout (binding = 0) readonly buffer X {A_TYPE data_a[];};
-layout (binding = 1) readonly buffer Y {B_TYPE data_b[];};
-layout (binding = 2) readonly buffer Z {float data_c[];};
-layout (binding = 3) buffer D {D_TYPE data_d[];};
+layout (descriptor_heap) readonly buffer X {A_TYPE data_a[];} xHeap[];
+layout (descriptor_heap) readonly buffer Y {B_TYPE data_b[];} yHeap[];
+layout (descriptor_heap) readonly buffer Z {float data_c[];} zHeap[];
+layout (descriptor_heap) buffer D {D_TYPE data_d[];} dHeap[];
+
+#define data_a xHeap[p.heap[0]].data_a
+#define data_b yHeap[p.heap[1]].data_b
+#define data_c zHeap[p.heap[2]].data_c
+#define data_d dHeap[p.heap[3]].data_d
 
 shared FLOAT_TYPE vals[BLOCK_SIZE];
 

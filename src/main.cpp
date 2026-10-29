@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -22,6 +24,7 @@
 #include "GgufSummary.h"
 #include "GraphServices.h"
 #include "HeadlessContext.h"
+#include "HeapIndices.h"
 #include "KvCache.h"
 #include "MatVec.h"
 #include "ModelSummary.h"
@@ -46,7 +49,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -62,11 +64,13 @@ using Muyo::RenderGraph::ResourceUse;
 constexpr uint32_t K_ELEMENT_COUNT = 1024;
 constexpr uint32_t K_WORKGROUP_SIZE = 64;
 
-/// Matches `shaders/smoke.comp`'s `PushConstants` block. The graph reflects the range and puts
-/// it in the pipeline layout; the layout is ours to fill, so it is defined here.
+/// Matches `shaders/smoke.comp`'s push-data block. The graph has no pipeline layout and pushes these
+/// bytes with `vkCmdPushDataEXT`; the block is ours to define, so its layout lives here and the shader
+/// indexes the descriptor heap with `dataIndex`, which the node resolves at record time.
 struct SmokePushConstants
 {
     uint32_t count;
+    uint32_t dataIndex;
 };
 
 /// The value `smoke.comp` writes at `index`.
@@ -101,7 +105,8 @@ int RunSmoke()
     // different lifetime and a different thing to get wrong.
     builder.AddResource("SmokeValues", BufferResourceDesc{.count = K_ELEMENT_COUNT,
                                                           .stride = sizeof(uint32_t),
-                                                          .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                                          .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
                                                           .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
                                                           .lifetime = ResourceLifetime::Persistent});
 
@@ -111,14 +116,17 @@ int RunSmoke()
         .resourceUses = {ResourceUse{.handle = ResourceHandle("SmokeValues"),
                                      .io = ResourceIOType::READ_WRITE,
                                      .usage = ResourceUsage::STORAGE_BUFFER,
-                                     .kind = ResourceKind::BUFFER,
-                                     .descriptorBinding = DescriptorBinding{.set = 0, .binding = 0}}},
+                                     .kind = ResourceKind::BUFFER}},
         .shaderNames = {"smoke.comp"},
         .execute = [](RenderGraphNodeContext& ctx)
         {
-            const SmokePushConstants pushConstants{.count = K_ELEMENT_COUNT};
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            const std::optional<uint32_t> dataIndex = ctx.GetHeapIndex("SmokeValues", ResourceUsage::STORAGE_BUFFER);
+            if (!dataIndex.has_value())
+            {
+                throw std::runtime_error("SmokeFill: SmokeValues has no descriptor-heap index");
+            }
+            const SmokePushConstants pushConstants{.count = K_ELEMENT_COUNT, .dataIndex = *dataIndex};
+            ctx.PushData(0, std::as_bytes(std::span{&pushConstants, 1}));
             vkCmdDispatch(ctx.commandBuffer, (K_ELEMENT_COUNT + K_WORKGROUP_SIZE - 1) / K_WORKGROUP_SIZE, 1, 1);
 
             // The graph plans the barriers *into* a node, not out of the last one, so the

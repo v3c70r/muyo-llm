@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -25,7 +26,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -52,9 +52,9 @@ constexpr uint32_t K_FUSE_SIZE = K_INTERMEDIATE;  // Largest output row count an
 // ── Per-op execute callbacks ─────────────────────────────────────────────────
 
 /// `mul_mat_vec`: `rows` output rows, each a dot product over `reduction`.
-auto GemvExecute(uint32_t reduction, uint32_t rows)
+auto GemvExecute(uint32_t reduction, uint32_t rows, const char* a, const char* b, const char* d)
 {
-    return [reduction, rows](RenderGraphNodeContext& ctx)
+    return [reduction, rows, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaMatVecPushConstants pushConstants{};
         pushConstants.ncols = reduction;
@@ -65,16 +65,20 @@ auto GemvExecute(uint32_t reduction, uint32_t rows)
         pushConstants.ne12 = 1;
         pushConstants.broadcast2 = 1;
         pushConstants.broadcast3 = 1;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::A, ctx, a, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::B, ctx, b, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::D, ctx, d, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE0, ctx, "Fuse0", ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE1, ctx, "Fuse1", ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, rows, 1, 1);
     };
 }
 
 /// `rms_norm` for a single `length`-element row.
-auto RmsNormExecute(uint32_t length)
+auto RmsNormExecute(uint32_t length, const char* a, const char* b, const char* d)
 {
-    return [length](RenderGraphNodeContext& ctx)
+    return [length, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaAddPushConstants pushConstants{};
         pushConstants.ne = length;
@@ -100,16 +104,18 @@ auto RmsNormExecute(uint32_t length)
         pushConstants.nb22 = length;
         pushConstants.nb23 = length;
         pushConstants.param1 = K_EPSILON;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, a, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, b, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, d, ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
     };
 }
 
 /// `shaders/add.comp` for two equal-length operands (broadcast `norepeat = true`).
-auto AddExecute(uint32_t length)
+auto AddExecute(uint32_t length, const char* a, const char* b, const char* d, const char* partial)
 {
-    return [length](RenderGraphNodeContext& ctx)
+    return [length, a, b, d, partial](RenderGraphNodeContext& ctx)
     {
         LlamaAddPushConstants pushConstants{};
         pushConstants.ne = length;
@@ -137,16 +143,19 @@ auto AddExecute(uint32_t length)
         pushConstants.nb21 = length;
         pushConstants.nb22 = length;
         pushConstants.nb23 = length;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, a, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, b, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, d, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_add_bindings::PARTIAL_SUMS, ctx, partial, ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, (length + 511) / 512, 1);
     };
 }
 
 /// `swiglu` in split mode over N elements.
-auto SwigluExecute(uint32_t count)
+auto SwigluExecute(uint32_t count, const char* a, const char* b, const char* d)
 {
-    return [count](RenderGraphNodeContext& ctx)
+    return [count, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaGluPushConstants pushConstants{};
         pushConstants.N = count;
@@ -180,16 +189,18 @@ auto SwigluExecute(uint32_t count)
                 pushConstants.ne2_012L);
         fastDiv(pushConstants.ne21 * pushConstants.ne20, pushConstants.ne2_01mp, pushConstants.ne2_01L);
         fastDiv(pushConstants.ne20, pushConstants.ne2_0mp, pushConstants.ne2_0L);
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_glu_bindings::A, ctx, a, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_glu_bindings::B, ctx, b, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_glu_bindings::D, ctx, d, ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, (count + 511) / 512, 1);
     };
 }
 
 /// `soft_max` without a mask over `columns`.
-auto SoftMaxExecute(uint32_t columns)
+auto SoftMaxExecute(uint32_t columns, const char* x, const char* y, const char* z, const char* d)
 {
-    return [columns](RenderGraphNodeContext& ctx)
+    return [columns, x, y, z, d](RenderGraphNodeContext& ctx)
     {
         LlamaSoftMaxPushConstants pushConstants{};
         pushConstants.KX = columns;
@@ -198,8 +209,11 @@ auto SoftMaxExecute(uint32_t columns)
         pushConstants.ne02 = 1;
         pushConstants.scale = K_ATTN_SCALE;
         pushConstants.nrowsX = 1;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::X, ctx, x, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Y, ctx, y, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Z, ctx, z, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::D, ctx, d, ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
     };
 }
@@ -286,7 +300,7 @@ int RunTransformerLayer()
     }
 
     RenderGraphBuilder builder(GraphServices());
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const VkBufferUsageFlags inputUsage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     const auto buffer = [](uint32_t count, VkBufferUsageFlags usage)
     {
@@ -337,14 +351,12 @@ int RunTransformerLayer()
     addOutput("SoftMaxMask", K_SEQ);
     addOutput("SoftMaxSinks", 1);
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto use = [&binding](const char* handle, ResourceIOType io, uint32_t index)
+    const auto use = [](const char* handle, ResourceIOType io, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = io,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
     const auto gemvUses = [&use](const char* a, const char* b, const char* d)
     {
@@ -366,14 +378,14 @@ int RunTransformerLayer()
                                       use("Xn", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
                      .shaderNames = {"rms_norm_f32.comp"},
                      .specializationConstants = {{.id = 1, .value = 1}},
-                     .execute = RmsNormExecute(K_HIDDEN)});
+                     .execute = RmsNormExecute(K_HIDDEN, "Hidden", "Norm1", "Xn")});
 
     builder.AddNode({.nodeName = "QProj",
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses("Wq", "Xn", "Q"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_HIDDEN, K_HIDDEN)});
+                     .execute = GemvExecute(K_HIDDEN, K_HIDDEN, "Wq", "Xn", "Q")});
 
     builder.AddNode({.nodeName = "QRope",
                      .queueType = QueueType::COMPUTE,
@@ -398,8 +410,17 @@ int RunTransformerLayer()
                          pushConstants.ne02 = 1;
                          pushConstants.nb01 = K_HIDDEN;
                          pushConstants.nb11 = K_HIDDEN;
-                         vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                            sizeof(pushConstants), &pushConstants);
+                         SetHeapIndex(pushConstants.heap, llama_rope_bindings::X, ctx, "Q",
+                                      ResourceUsage::STORAGE_BUFFER);
+                         SetHeapIndex(pushConstants.heap, llama_rope_bindings::Y, ctx, "RopePositions",
+                                      ResourceUsage::STORAGE_BUFFER);
+                         SetHeapIndex(pushConstants.heap, llama_rope_bindings::Z, ctx, "Partial",
+                                      ResourceUsage::STORAGE_BUFFER);
+                         SetHeapIndex(pushConstants.heap, llama_rope_bindings::D, ctx, "Qr",
+                                      ResourceUsage::STORAGE_BUFFER);
+                         SetHeapIndex(pushConstants.heap, llama_rope_bindings::I, ctx, "Partial",
+                                      ResourceUsage::STORAGE_BUFFER);
+                         PushData(ctx, pushConstants);
                          vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
                      }});
 
@@ -408,7 +429,7 @@ int RunTransformerLayer()
                      .resourceUses = gemvUses("KeyCache", "Qr", "Scores"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_HIDDEN, K_SEQ)});
+                     .execute = GemvExecute(K_HIDDEN, K_SEQ, "KeyCache", "Qr", "Scores")});
 
     builder.AddNode(
         {.nodeName = "AttnWeights",
@@ -419,21 +440,21 @@ int RunTransformerLayer()
                           use("Probs", ResourceIOType::READ_WRITE, llama_soft_max_bindings::D)},
          .shaderNames = {"soft_max_f32.comp"},
          .specializationConstants = {{.id = llama_soft_max_spec_constants::BLOCK_SIZE, .value = K_BLOCK_SIZE}},
-         .execute = SoftMaxExecute(K_SEQ)});
+         .execute = SoftMaxExecute(K_SEQ, "Scores", "SoftMaxMask", "SoftMaxSinks", "Probs")});
 
     builder.AddNode({.nodeName = "AttnOut",
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses("ValueCacheT", "Probs", "AttnOut"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_SEQ, K_HIDDEN)});
+                     .execute = GemvExecute(K_SEQ, K_HIDDEN, "ValueCacheT", "Probs", "AttnOut")});
 
     builder.AddNode({.nodeName = "OProj",
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses("Wo", "AttnOut", "O"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_HIDDEN, K_HIDDEN)});
+                     .execute = GemvExecute(K_HIDDEN, K_HIDDEN, "Wo", "AttnOut", "O")});
 
     builder.AddNode({.nodeName = "Residual1",
                      .queueType = QueueType::COMPUTE,
@@ -443,7 +464,7 @@ int RunTransformerLayer()
                                       use("Partial", ResourceIOType::READ_WRITE, 3)},
                      .shaderNames = {"add_f32.comp"},
                      .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
-                     .execute = AddExecute(K_HIDDEN)});
+                     .execute = AddExecute(K_HIDDEN, "Hidden", "O", "X1", "Partial")});
 
     builder.AddNode({.nodeName = "PostNorm",
                      .queueType = QueueType::COMPUTE,
@@ -452,21 +473,21 @@ int RunTransformerLayer()
                                       use("Xn2", ResourceIOType::READ_WRITE, llama_add_bindings::D)},
                      .shaderNames = {"rms_norm_f32.comp"},
                      .specializationConstants = {{.id = 1, .value = 1}},
-                     .execute = RmsNormExecute(K_HIDDEN)});
+                     .execute = RmsNormExecute(K_HIDDEN, "X1", "Norm2", "Xn2")});
 
     builder.AddNode({.nodeName = "GateProj",
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses("Wgate", "Xn2", "Gate"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_HIDDEN, K_INTERMEDIATE)});
+                     .execute = GemvExecute(K_HIDDEN, K_INTERMEDIATE, "Wgate", "Xn2", "Gate")});
 
     builder.AddNode({.nodeName = "UpProj",
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses("Wup", "Xn2", "Up"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_HIDDEN, K_INTERMEDIATE)});
+                     .execute = GemvExecute(K_HIDDEN, K_INTERMEDIATE, "Wup", "Xn2", "Up")});
 
     builder.AddNode({.nodeName = "SwiGLU",
                      .queueType = QueueType::COMPUTE,
@@ -474,14 +495,14 @@ int RunTransformerLayer()
                                       use("Up", ResourceIOType::READ, llama_glu_bindings::B),
                                       use("Act", ResourceIOType::READ_WRITE, llama_glu_bindings::D)},
                      .shaderNames = {"swiglu_f32.comp"},
-                     .execute = SwigluExecute(K_INTERMEDIATE)});
+                     .execute = SwigluExecute(K_INTERMEDIATE, "Gate", "Up", "Act")});
 
     builder.AddNode({.nodeName = "DownProj",
                      .queueType = QueueType::COMPUTE,
                      .resourceUses = gemvUses("Wdown", "Act", "MlpOut"),
                      .shaderNames = {"mul_mat_vec_f32_f32_f32.comp"},
                      .specializationConstants = gemvSpec,
-                     .execute = GemvExecute(K_INTERMEDIATE, K_HIDDEN)});
+                     .execute = GemvExecute(K_INTERMEDIATE, K_HIDDEN, "Wdown", "Act", "MlpOut")});
 
     builder.AddNode({.nodeName = "Residual2",
                      .queueType = QueueType::COMPUTE,
@@ -491,7 +512,7 @@ int RunTransformerLayer()
                                       use("Partial", ResourceIOType::READ_WRITE, 3)},
                      .shaderNames = {"add_f32.comp"},
                      .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
-                     .execute = AddExecute(K_HIDDEN)});
+                     .execute = AddExecute(K_HIDDEN, "X1", "MlpOut", "LayerOut", "Partial")});
 
     // The ordering the graph does not infer: one edge per data dependency.
     const char* chain[] = {"PreNorm",   "QProj",    "QRope",  "AttnScores", "AttnWeights", "AttnOut",  "OProj",
