@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -23,7 +24,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -73,7 +73,7 @@ int RunRmsNorm()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -86,85 +86,82 @@ int RunRmsNorm()
     builder.AddResource("RmsWeight", buffer(K_COLS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("RmsOutput", buffer(K_ROWS * K_COLS, sizeof(float), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
+    RenderGraphNodeCreateInfo normPass = {
+        .nodeName = "LlamaRmsNorm",
+        .queueType = QueueType::COMPUTE,
+        .resourceUses =
+            {
+                ResourceUse{.handle = ResourceHandle("RmsInput"),
+                            .io = ResourceIOType::READ,
+                            .usage = ResourceUsage::STORAGE_BUFFER,
+                            .kind = ResourceKind::BUFFER},
+                ResourceUse{.handle = ResourceHandle("RmsWeight"),
+                            .io = ResourceIOType::READ,
+                            .usage = ResourceUsage::STORAGE_BUFFER,
+                            .kind = ResourceKind::BUFFER},
+                ResourceUse{.handle = ResourceHandle("RmsOutput"),
+                            .io = ResourceIOType::READ_WRITE,
+                            .usage = ResourceUsage::STORAGE_BUFFER,
+                            .kind = ResourceKind::BUFFER},
+            },
+        .shaderNames = {"rms_norm_f32.comp"},
+        .specializationConstants = {{.id = RMS_NORM_MULTIPLY_CONSTANT, .value = 1}},
+        .execute = [](RenderGraphNodeContext& ctx)
+        {
+            // ggml's `ggml_vk_rms_norm_push_constants`: src0 and dst are [rows, cols]
+            // transposed in ggml's order - ne[0] = cols, nb[0] = 1 (elements, again).
+            // The weight is 1-D, so its outer strides are 0 and every row reads the
+            // same `ne10 = cols` elements.
+            LlamaAddPushConstants pushConstants{};
+            pushConstants.ne = K_ROWS * K_COLS;
+            pushConstants.ne00 = K_COLS;
+            pushConstants.ne01 = K_ROWS;
+            pushConstants.ne02 = 1;
+            pushConstants.ne03 = 1;
+            pushConstants.nb00 = 1;
+            pushConstants.nb01 = K_COLS;
+            pushConstants.nb02 = K_ROWS * K_COLS;
+            pushConstants.nb03 = K_ROWS * K_COLS;
+            pushConstants.ne10 = K_COLS;
+            pushConstants.ne11 = 1;
+            pushConstants.ne12 = 1;
+            pushConstants.ne13 = 1;
+            pushConstants.nb10 = 1;
+            pushConstants.nb11 = 0;
+            pushConstants.nb12 = 0;
+            pushConstants.nb13 = 0;
+            pushConstants.ne20 = K_COLS;
+            pushConstants.ne21 = K_ROWS;
+            pushConstants.ne22 = 1;
+            pushConstants.ne23 = 1;
+            pushConstants.nb20 = 1;
+            pushConstants.nb21 = K_COLS;
+            pushConstants.nb22 = K_ROWS * K_COLS;
+            pushConstants.nb23 = K_ROWS * K_COLS;
+            pushConstants.misalignOffsets = 0;
+            pushConstants.param1 = K_EPSILON;
+            pushConstants.param2 = 0.0F;
+            pushConstants.param3 = 0;
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, "RmsInput", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, "RmsWeight", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, "RmsOutput", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
-    RenderGraphNodeCreateInfo normPass = {.nodeName = "LlamaRmsNorm",
-                                          .queueType = QueueType::COMPUTE,
-                                          .resourceUses =
-                                              {
-                                                  ResourceUse{.handle = ResourceHandle("RmsInput"),
-                                                              .io = ResourceIOType::READ,
-                                                              .usage = ResourceUsage::STORAGE_BUFFER,
-                                                              .kind = ResourceKind::BUFFER,
-                                                              .descriptorBinding = binding(llama_add_bindings::A)},
-                                                  ResourceUse{.handle = ResourceHandle("RmsWeight"),
-                                                              .io = ResourceIOType::READ,
-                                                              .usage = ResourceUsage::STORAGE_BUFFER,
-                                                              .kind = ResourceKind::BUFFER,
-                                                              .descriptorBinding = binding(llama_add_bindings::B)},
-                                                  ResourceUse{.handle = ResourceHandle("RmsOutput"),
-                                                              .io = ResourceIOType::READ_WRITE,
-                                                              .usage = ResourceUsage::STORAGE_BUFFER,
-                                                              .kind = ResourceKind::BUFFER,
-                                                              .descriptorBinding = binding(llama_add_bindings::D)},
-                                              },
-                                          .shaderNames = {"rms_norm_f32.comp"},
-                                          .specializationConstants = {{.id = RMS_NORM_MULTIPLY_CONSTANT, .value = 1}},
-                                          .execute = [](RenderGraphNodeContext& ctx)
-                                          {
-                                              // ggml's `ggml_vk_rms_norm_push_constants`: src0 and dst are [rows, cols]
-                                              // transposed in ggml's order - ne[0] = cols, nb[0] = 1 (elements, again).
-                                              // The weight is 1-D, so its outer strides are 0 and every row reads the
-                                              // same `ne10 = cols` elements.
-                                              LlamaAddPushConstants pushConstants{};
-                                              pushConstants.ne = K_ROWS * K_COLS;
-                                              pushConstants.ne00 = K_COLS;
-                                              pushConstants.ne01 = K_ROWS;
-                                              pushConstants.ne02 = 1;
-                                              pushConstants.ne03 = 1;
-                                              pushConstants.nb00 = 1;
-                                              pushConstants.nb01 = K_COLS;
-                                              pushConstants.nb02 = K_ROWS * K_COLS;
-                                              pushConstants.nb03 = K_ROWS * K_COLS;
-                                              pushConstants.ne10 = K_COLS;
-                                              pushConstants.ne11 = 1;
-                                              pushConstants.ne12 = 1;
-                                              pushConstants.ne13 = 1;
-                                              pushConstants.nb10 = 1;
-                                              pushConstants.nb11 = 0;
-                                              pushConstants.nb12 = 0;
-                                              pushConstants.nb13 = 0;
-                                              pushConstants.ne20 = K_COLS;
-                                              pushConstants.ne21 = K_ROWS;
-                                              pushConstants.ne22 = 1;
-                                              pushConstants.ne23 = 1;
-                                              pushConstants.nb20 = 1;
-                                              pushConstants.nb21 = K_COLS;
-                                              pushConstants.nb22 = K_ROWS * K_COLS;
-                                              pushConstants.nb23 = K_ROWS * K_COLS;
-                                              pushConstants.misalignOffsets = 0;
-                                              pushConstants.param1 = K_EPSILON;
-                                              pushConstants.param2 = 0.0F;
-                                              pushConstants.param3 = 0;
-                                              vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout,
-                                                                 VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                                                                 &pushConstants);
+            // One workgroup per row (ggml dispatches `{ne[1], ne[2], ne[3]}`).
+            vkCmdDispatch(ctx.commandBuffer, K_ROWS, 1, 1);
 
-                                              // One workgroup per row (ggml dispatches `{ne[1], ne[2], ne[3]}`).
-                                              vkCmdDispatch(ctx.commandBuffer, K_ROWS, 1, 1);
-
-                                              VkMemoryBarrier2 toHostBarrier{};
-                                              toHostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-                                              toHostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-                                              toHostBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
-                                              toHostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
-                                              toHostBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
-                                              VkDependencyInfo dependencyInfo{};
-                                              dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-                                              dependencyInfo.memoryBarrierCount = 1;
-                                              dependencyInfo.pMemoryBarriers = &toHostBarrier;
-                                              vkCmdPipelineBarrier2(ctx.commandBuffer, &dependencyInfo);
-                                          }};
+            VkMemoryBarrier2 toHostBarrier{};
+            toHostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            toHostBarrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            toHostBarrier.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+            toHostBarrier.dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+            toHostBarrier.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+            VkDependencyInfo dependencyInfo{};
+            dependencyInfo.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependencyInfo.memoryBarrierCount = 1;
+            dependencyInfo.pMemoryBarriers = &toHostBarrier;
+            vkCmdPipelineBarrier2(ctx.commandBuffer, &dependencyInfo);
+        }};
 
     builder.AddNode(normPass);
     builder.Build();

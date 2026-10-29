@@ -6,8 +6,8 @@ namespace muyo_llm
 /// CPU reference.
 ///
 /// Exercises the parts of a foreign shader's contract the graph does not own: the compile-time
-/// define set, the reflected push-constant block, an explicit 4-binding descriptor set including a
-/// binding the shader declares but does not use, and a specialization constant.
+/// define set, the reflected push-constant block, a 4-slot heap table including a slot the shader
+/// declares but does not use, and a specialization constant.
 ///
 /// Assumes the Muyo subsystems are already initialised (see `HeadlessContext`).
 /// @return 0 when the GPU result matches the CPU reference, 1 otherwise.

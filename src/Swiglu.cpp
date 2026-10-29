@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -23,7 +24,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -68,7 +68,7 @@ int RunSwiglu()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -81,14 +81,12 @@ int RunSwiglu()
     builder.AddResource("GluUp", buffer(K_ELEMENT_COUNT, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("GluOutput", buffer(K_ELEMENT_COUNT, sizeof(float), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto readUse = [&binding](const char* handle, uint32_t index)
+    const auto readUse = [](const char* handle, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = ResourceIOType::READ,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     RenderGraphNodeCreateInfo gluPass = {
@@ -101,8 +99,7 @@ int RunSwiglu()
                 ResourceUse{.handle = ResourceHandle("GluOutput"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_glu_bindings::D)},
+                            .kind = ResourceKind::BUFFER},
             },
         .shaderNames = {"swiglu_f32.comp"},
         .execute = [](RenderGraphNodeContext& ctx)
@@ -136,8 +133,10 @@ int RunSwiglu()
                         pushConstants.ne2_012L);
             InitFastDiv(pushConstants.ne21 * pushConstants.ne20, pushConstants.ne2_01mp, pushConstants.ne2_01L);
             InitFastDiv(pushConstants.ne20, pushConstants.ne2_0mp, pushConstants.ne2_0L);
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_glu_bindings::A, ctx, "GluGate", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_glu_bindings::B, ctx, "GluUp", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_glu_bindings::D, ctx, "GluOutput", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
             // Local size is 512 and the shader linearises z*262144 + y*512 + x, so one workgroup
             // covers 512 elements in x.

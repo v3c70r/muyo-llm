@@ -1,5 +1,7 @@
 #extension GL_EXT_shader_16bit_storage : require
 #extension GL_EXT_control_flow_attributes : require
+#extension GL_EXT_descriptor_heap : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 #include "utils.glsl"
 
@@ -15,17 +17,29 @@ layout (push_constant) uniform parameter
     // push constant limit while still leaving room for four float parameters.
     uint ne0_012mp; uint ne0_01mp;  uint ne0_0mp;  uint ne0_Ls;
     uint ne1_012mp; uint ne1_01mp;  uint ne1_0mp;  uint ne1_Ls;
+
+    // Descriptor-heap indices in `llama_copy_bindings` order (A, D).
+    uint heap[2];
 } p;
 
-layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (descriptor_heap) readonly buffer A {A_TYPE data_a[];} aHeap[];
 #if defined(A_TYPE_PACKED16)
-layout (binding = 0) readonly buffer A_PACKED16 {A_TYPE_PACKED16 data_a_packed16[];};
+layout (descriptor_heap) readonly buffer A_PACKED16 {A_TYPE_PACKED16 data_a_packed16[];} aPacked16Heap[];
 #endif
 #if defined(A_TYPE_PACKED32)
-layout (binding = 0) readonly buffer A_PACKED32 {A_TYPE_PACKED32 data_a_packed32[];};
+layout (descriptor_heap) readonly buffer A_PACKED32 {A_TYPE_PACKED32 data_a_packed32[];} aPacked32Heap[];
 #endif
 
-layout (binding = 1) writeonly buffer D {D_TYPE data_d[];};
+layout (descriptor_heap) writeonly buffer D {D_TYPE data_d[];} dHeap[];
+
+#define data_a aHeap[p.heap[0]].data_a
+#define data_d dHeap[p.heap[1]].data_d
+#if defined(A_TYPE_PACKED16)
+#define data_a_packed16 aPacked16Heap[p.heap[0]].data_a_packed16
+#endif
+#if defined(A_TYPE_PACKED32)
+#define data_a_packed32 aPacked32Heap[p.heap[0]].data_a_packed32
+#endif
 
 uint get_idx() {
     return gl_GlobalInvocationID.z * 262144 + gl_GlobalInvocationID.y * 512 + gl_GlobalInvocationID.x;

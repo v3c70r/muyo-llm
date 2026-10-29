@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -24,7 +25,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -81,7 +81,7 @@ int RunMatVec()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -94,19 +94,17 @@ int RunMatVec()
                         buffer(K_ROWS * K_COLS, sizeof(uint16_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("InputB", buffer(K_COLS, sizeof(float), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("OutputD", buffer(K_ROWS, sizeof(float), storage));
-    // `mul_mat_vec.comp` declares bindings 3 and 4 unconditionally; they are read only under the
+    // `mul_mat_vec.comp` declares heap slots 3 and 4 unconditionally; they are read only under the
     // matching fusion flag, which is 0 here, but the descriptor must still be valid.
     builder.AddResource("Fuse0", buffer(K_ROWS, sizeof(float), storage));
     builder.AddResource("Fuse1", buffer(K_ROWS, sizeof(float), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto readUse = [&binding](const char* handle, uint32_t index)
+    const auto readUse = [](const char* handle, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = ResourceIOType::READ,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     RenderGraphNodeCreateInfo gemvPass = {
@@ -121,8 +119,7 @@ int RunMatVec()
                 ResourceUse{.handle = ResourceHandle("OutputD"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_mat_vec_bindings::D)},
+                            .kind = ResourceKind::BUFFER},
                 readUse("Fuse0", llama_mat_vec_bindings::FUSE0),
                 readUse("Fuse1", llama_mat_vec_bindings::FUSE1),
             },
@@ -152,8 +149,14 @@ int RunMatVec()
             pushConstants.ne12 = 1;
             pushConstants.broadcast2 = 1;
             pushConstants.broadcast3 = 1;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::A, ctx, "WeightsA", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::B, ctx, "InputB", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::D, ctx, "OutputD", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE0, ctx, "Fuse0",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE1, ctx, "Fuse1",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
             // NUM_ROWS rows per workgroup; one workgroup per row here.
             vkCmdDispatch(ctx.commandBuffer, K_ROWS, 1, 1);

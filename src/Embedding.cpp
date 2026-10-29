@@ -10,6 +10,7 @@
 
 #include "Gguf.h"
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -26,7 +27,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -85,7 +85,7 @@ int RunEmbedding(const std::string& path, int32_t token)
     }
 
     RenderGraphBuilder builder(GraphServices());
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     builder.AddResource("TokenEmbedding", BufferResourceDesc{.count = static_cast<uint64_t>(vocabSize) * embeddingDim,
                                                              .stride = sizeof(float),
                                                              .usage = storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -102,14 +102,12 @@ int RunEmbedding(const std::string& path, int32_t token)
                                                           .memoryProperties = VMA_MEMORY_USAGE_CPU_TO_GPU,
                                                           .lifetime = ResourceLifetime::Persistent});
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto use = [&binding](const char* handle, ResourceIOType io, uint32_t index)
+    const auto use = [](const char* handle, ResourceIOType io, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = io,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     RenderGraphNodeCreateInfo gatherPass = {
@@ -147,8 +145,11 @@ int RunEmbedding(const std::string& path, int32_t token)
             pushConstants.nb21 = embeddingDim;
             pushConstants.nb22 = embeddingDim;
             pushConstants.nb23 = embeddingDim;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, "TokenEmbedding",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, "TokenIndex", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, "TokenVector", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, (embeddingDim + 511) / 512, 1, 1);
 
             // The compute-write to host-read barrier (docs/Findings.md F4): without it the gather's

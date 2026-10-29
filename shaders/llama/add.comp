@@ -11,7 +11,8 @@
 
 const uint num_threads = 256;
 
-layout (binding = 3, std430) buffer PartialBuf {float partial_sums[];};
+layout (descriptor_heap, std430) buffer PartialBuf {float partial_sums[];} partialHeap[];
+#define partial_sums partialHeap[p.heap[3]].partial_sums
 
 layout(local_size_x = num_threads, local_size_y = 1, local_size_z = 1) in;
 

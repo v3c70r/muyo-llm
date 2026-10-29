@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -24,7 +25,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -47,9 +47,9 @@ constexpr uint32_t K_BLOCK_SIZE = 32;
 const float K_SCALE = 1.0F / std::sqrt(static_cast<float>(K_HEAD_DIM));
 
 /// Fill a GEMV node's execute callback. `rows` output rows, each a dot product over `reduction`.
-auto MakeGemvExecute(uint32_t reduction, uint32_t rows)
+auto MakeGemvExecute(uint32_t reduction, uint32_t rows, const char* a, const char* b, const char* d)
 {
-    return [reduction, rows](RenderGraphNodeContext& ctx)
+    return [reduction, rows, a, b, d](RenderGraphNodeContext& ctx)
     {
         LlamaMatVecPushConstants pushConstants{};
         pushConstants.ncols = reduction;
@@ -65,8 +65,12 @@ auto MakeGemvExecute(uint32_t reduction, uint32_t rows)
         pushConstants.ne12 = 1;
         pushConstants.broadcast2 = 1;
         pushConstants.broadcast3 = 1;
-        vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pushConstants),
-                           &pushConstants);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::A, ctx, a, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::B, ctx, b, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::D, ctx, d, ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE0, ctx, "Fuse0", ResourceUsage::STORAGE_BUFFER);
+        SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE1, ctx, "Fuse1", ResourceUsage::STORAGE_BUFFER);
+        PushData(ctx, pushConstants);
         vkCmdDispatch(ctx.commandBuffer, rows, 1, 1);
     };
 }
@@ -105,7 +109,7 @@ int RunAttention()
     }
 
     RenderGraphBuilder builder(GraphServices());
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -123,21 +127,19 @@ int RunAttention()
     builder.AddResource("Scores", buffer(K_KEY_COUNT, sizeof(float), storage));
     builder.AddResource("Probabilities", buffer(K_KEY_COUNT, sizeof(float), storage));
     builder.AddResource("AttnOutput", buffer(K_HEAD_DIM, sizeof(float), storage));
-    // GEMV bindings 3/4 and the softmax bindings 1/2 are declared unconditionally; unused here.
+    // GEMV heap slots 3/4 and the softmax slots 1/2 are declared unconditionally; unused here.
     const uint32_t fuseSize = K_KEY_COUNT > K_HEAD_DIM ? K_KEY_COUNT : K_HEAD_DIM;
     builder.AddResource("Fuse0", buffer(fuseSize, sizeof(float), storage));
     builder.AddResource("Fuse1", buffer(fuseSize, sizeof(float), storage));
     builder.AddResource("SoftMaxMask", buffer(K_KEY_COUNT, sizeof(float), storage));
     builder.AddResource("SoftMaxSinks", buffer(1, sizeof(float), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto gemvUse = [&binding](const char* handle, ResourceIOType io, uint32_t index)
+    const auto gemvUse = [](const char* handle, ResourceIOType io, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = io,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     // Node 1: scores = K . q. K is [KV, HSK], so one row per key.
@@ -159,7 +161,7 @@ int RunAttention()
                 {.id = llama_mat_vec_spec_constants::NUM_ROWS, .value = 1},
                 {.id = llama_mat_vec_spec_constants::NUM_COLS, .value = 1},
             },
-        .execute = MakeGemvExecute(K_HEAD_DIM, K_KEY_COUNT)};
+        .execute = MakeGemvExecute(K_HEAD_DIM, K_KEY_COUNT, "Keys", "Query", "Scores")};
 
     // Node 2: probs = softmax(scores * scale).
     RenderGraphNodeCreateInfo weightsPass = {
@@ -194,8 +196,14 @@ int RunAttention()
             pushConstants.nHeadLog2 = 0;
             pushConstants.nrowsX = 1;
             pushConstants.hasSinks = 0;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::X, ctx, "Scores", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Y, ctx, "SoftMaxMask",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Z, ctx, "SoftMaxSinks",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::D, ctx, "Probabilities",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
         }};
 
@@ -218,7 +226,7 @@ int RunAttention()
                 {.id = llama_mat_vec_spec_constants::NUM_ROWS, .value = 1},
                 {.id = llama_mat_vec_spec_constants::NUM_COLS, .value = 1},
             },
-        .execute = MakeGemvExecute(K_KEY_COUNT, K_HEAD_DIM)};
+        .execute = MakeGemvExecute(K_KEY_COUNT, K_HEAD_DIM, "ValuesTransposed", "Probabilities", "AttnOutput")};
 
     builder.AddNode(scoresPass);
     builder.AddNode(weightsPass);

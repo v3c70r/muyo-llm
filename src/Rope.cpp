@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -23,7 +24,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -65,7 +65,7 @@ int RunRope()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -83,14 +83,12 @@ int RunRope()
     builder.AddResource("RopeOutput", buffer(K_ROWS * K_N_DIMS, sizeof(float), storage));
     builder.AddResource("RopeSetRows", buffer(K_ROWS, sizeof(uint32_t) * 2, storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto readUse = [&binding](const char* handle, uint32_t index)
+    const auto readUse = [](const char* handle, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = ResourceIOType::READ,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     RenderGraphNodeCreateInfo ropePass = {
@@ -104,8 +102,7 @@ int RunRope()
                 ResourceUse{.handle = ResourceHandle("RopeOutput"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_rope_bindings::D)},
+                            .kind = ResourceKind::BUFFER},
                 readUse("RopeSetRows", llama_rope_bindings::I),
             },
         .shaderNames = {"rope_neox_f32.comp"},
@@ -145,8 +142,13 @@ int RunRope()
             pushConstants.nb13 = K_N_DIMS;
             pushConstants.aOffset = 0;
             pushConstants.dOffset = 0;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::X, ctx, "RopeInput", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::Y, ctx, "RopePos", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::Z, ctx, "RopeFreqFactors",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::D, ctx, "RopeOutput", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::I, ctx, "RopeSetRows", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
             // ggml dispatches `{nrows, ne00, z}` against wg_denoms `{1, 512, 1}`; one row and
             // nDims <= 512 is one workgroup.

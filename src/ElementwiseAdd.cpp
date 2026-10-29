@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -22,7 +23,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -49,8 +49,8 @@ constexpr uint32_t K_ELEMENT_COUNT = 1000;
 /// elements, which is how this was found.
 constexpr uint32_t K_ELEMENTS_PER_Y_BLOCK = 512;
 
-/// `misalign_offsets` packs the three operands' byte offsets into three bytes; explicit bindings
-/// start each buffer at offset 0.
+/// `misalign_offsets` packs the three operands' byte offsets into three bytes; each heap descriptor
+/// binds its whole buffer at offset 0.
 constexpr uint32_t K_MISALIGN_OFFSETS = 0;
 
 /// Fill the ggml-shaped push-constant block for a flat, single-dimension `A op B -> D`.
@@ -102,9 +102,9 @@ int RunElementwiseAdd()
 
     // A and B are uploaded from the host, so they carry TRANSFER_DST for `BufferResource::SetData`,
     // which stages the copy rather than assuming host-visible device memory. D is read back on the
-    // host, so CPU_TO_GPU. `PartialSums` mirrors binding 3, which `add.comp` declares
+    // host, so CPU_TO_GPU. `PartialSums` is heap slot 3, which `add.comp` declares and indexes
     // unconditionally even when ADD_RMS is off.
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto floatBuffer = [](uint32_t count, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -118,8 +118,6 @@ int RunElementwiseAdd()
     builder.AddResource("MatrixD", floatBuffer(K_ELEMENT_COUNT, storage));
     builder.AddResource("PartialSums", floatBuffer(2, storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-
     RenderGraphNodeCreateInfo addPass = {
         .nodeName = "LlamaAdd",
         .queueType = QueueType::COMPUTE,
@@ -128,35 +126,35 @@ int RunElementwiseAdd()
                 ResourceUse{.handle = ResourceHandle("MatrixA"),
                             .io = ResourceIOType::READ,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_add_bindings::A)},
+                            .kind = ResourceKind::BUFFER},
                 ResourceUse{.handle = ResourceHandle("MatrixB"),
                             .io = ResourceIOType::READ,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_add_bindings::B)},
+                            .kind = ResourceKind::BUFFER},
                 // READ_WRITE, not WRITE: the usage table's `{STORAGE_BUFFER, WRITE}` profile is a
                 // *host* write, so a GPU writer has to spell READ_WRITE (docs/Findings.md F3,
                 // Muyo #12).
                 ResourceUse{.handle = ResourceHandle("MatrixD"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_add_bindings::D)},
+                            .kind = ResourceKind::BUFFER},
                 ResourceUse{.handle = ResourceHandle("PartialSums"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_add_bindings::PARTIAL_SUMS)},
+                            .kind = ResourceKind::BUFFER},
             },
         .shaderNames = {"add_f32.comp"},
         // `norepeat` is true because A and B have the same shape, so B's indices need no modulo.
         .specializationConstants = {{.id = llama_add_spec_constants::NOREPEAT, .value = 1}},
         .execute = [](RenderGraphNodeContext& ctx)
         {
-            const LlamaAddPushConstants pushConstants = MakeAddPushConstants(K_ELEMENT_COUNT);
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            LlamaAddPushConstants pushConstants = MakeAddPushConstants(K_ELEMENT_COUNT);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx, "MatrixA", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx, "MatrixB", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx, "MatrixD", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_add_bindings::PARTIAL_SUMS, ctx, "PartialSums",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
             const uint32_t yBlocks = (K_ELEMENT_COUNT + K_ELEMENTS_PER_Y_BLOCK - 1) / K_ELEMENTS_PER_Y_BLOCK;
             vkCmdDispatch(ctx.commandBuffer, 1, yBlocks, 1);

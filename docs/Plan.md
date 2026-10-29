@@ -43,7 +43,7 @@ library constraints it lists are exactly what decode stresses:
 | No frame boundary in the library | Each execution is one token; weights and KV cache outlive it. |
 | Compute-only is first-class | No window, no swapchain, no colour attachment anywhere. |
 | Long-lived resources are first-class | Weights (process lifetime) and KV cache (generation lifetime). |
-| Device/allocator/descriptor injected, not global | Currently impossible without dragging in the engine's 15 singletons. |
+| Device/allocator/descriptor injected, not global | The descriptor heap is injected since B1b (`RenderGraphServices::descriptorHeap`); the device and allocators are still reached through globals (#53). |
 | Diagnostics an agent can act on | Failures surface as wrong numbers, not validation errors. |
 
 Decode is a deep, narrow graph (~7 nodes x N layers per token, tiny M) with a growing KV
@@ -57,9 +57,9 @@ render frame and can follow.
 | --- | --- | --- |
 | Repository | `muyo-llm`, separate from Muyo | Keeps consumer and library separate; same owner (`v3c70r`). |
 | Consuming Muyo | git submodule + `add_subdirectory`, link `muyo_rg` | **Works as of Muyo #68**, merged `0617102`. A two-file probe configures, builds, links and runs, with Muyo's libraries landing in the consumer's `build/muyo/`. Four properties of the embed carry over and are prerequisites, not bugs: configure still needs the **Vulkan SDK on the environment** (`slangc` and `glslangValidator` are checked unconditionally, Muyo `CMakeLists.txt:130,146`), still needs **network** (VMA is fetched; Catch2 no longer is), third-party **target names are global** (`stb`, `glfw`, `imgui` … — a collision would name neither project), and linking `muyo_rg` pulls `muyo` with it, which is the accepted coupling. Filed as Muyo #73 to close the last three. |
-| Shaders | Vendor llama.cpp `vulkan-shaders` sources + our own `glslc` rules | No `ggml-vulkan` dependency; only sources and contracts. |
-| Shader contract layer | Per-op C++ wrapper replicating defines, spec constants, push-constant struct and bindings | Muyo has no such layer; this is the bulk of the work. |
-| Push constants | Define the struct in muyo-llm; `vkCmdPushConstants` inside the node callback using `ctx.pipelineLayout` | Works today (see §5.1); no upstream change needed. |
+| Shaders | Vendor llama.cpp `vulkan-shaders` sources + our own `glslc` rules | No `ggml-vulkan` dependency; only sources and contracts. Since Muyo B1b the graph is descriptor-heap-only, so the vendored heads and the dispatched shaders are compiled with `GL_EXT_descriptor_heap` and index a `heap[]` table in push data. |
+| Shader contract layer | Per-op C++ wrapper replicating defines, spec constants, push-constant struct and heap slots | Muyo has no such layer; this is the bulk of the work. |
+| Push data | Define the struct in muyo-llm; fill `heap[]` from `ctx.GetHeapIndex` and record the block with `ctx.PushData` | The heap pipeline has no `VkPipelineLayout`, so `vkCmdPushConstants` is gone; see §5.1. |
 | Spec constants | Supported upstream since Muyo PR #66 | Resolved; see §5.2. |
 | Graph mapping | One compute node per op; explicit `AddDependency` chains | Matches the current API (no implicit edges). |
 | Weights / KV | Imported / `Persistent` buffers, reused across executions | Directly tests the long-lived-resource constraint. |
@@ -68,22 +68,20 @@ render frame and can follow.
 
 ## 5. Upstream gaps
 
-### 5.1 Push constants — no functional gap
+### 5.1 Push data — the pipeline layout is gone
 
-The pipeline layout gets its push-constant ranges from shader reflection
-(`src/RenderGraph/RenderGraphBuilder.cpp:179-190`), and each node's callback receives
-`context.pipelineLayout` (`RenderGraphBuilder.cpp:915`). A consumer can therefore define the
-struct locally and push it:
+Muyo B1b deleted the descriptor-set path: a graph pipeline is created with
+`VK_PIPELINE_CREATE_2_DESCRIPTOR_HEAP_BIT_EXT` and `layout = VK_NULL_HANDLE`, resources are reached
+through `layout(descriptor_heap)` arrays indexed by a word the node supplies, and the node records
+its block with `RenderGraphNodeContext::PushData` (`vkCmdPushDataEXT`). `ctx.pipelineLayout` and
+`vkCmdPushConstants` no longer exist on the graph path.
 
-```cpp
-vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                   0, sizeof(MulMatParams), &params);
-```
-
-Ergonomic gaps only, candidates for the `#55` (fail at Build) workstream:
-
-- `ResourceUsage::PUSH_CONSTANTS` is a dead enum — `ResourceUseResolver.h:157` throws on it.
-- No build-time check that a pushed range matches reflection.
+The consumer's ABI is therefore the struct plus the `heap[]` table at its end, both of which must
+match the shader field for field. `src/HeapIndices.h` fills a table entry from
+`GetHeapIndex(handle, usage)` so a missing use is a named record-time error rather than a zero index
+reading another resource's descriptor. The graph now checks that every reflected push range is
+covered by `PushData`, which closes the old "no build-time check that a pushed range matches
+reflection" gap. `ResourceUsage::PUSH_CONSTANTS` remains a dead enum.
 
 ### 5.2 Specialization constants — resolved upstream in Muyo PR #66
 
@@ -173,8 +171,9 @@ search path, or an in-memory module. Candidate for `#53`.
 
 ### 5.5 Known constraints, to be measured rather than assumed
 
-- 15 singleton call sites inside `src/RenderGraph/` (`GetRenderDevice`,
-  `GetRenderResourceManager`, `GetDescriptorManager`).
+- Singleton call sites inside `src/RenderGraph/` (`GetRenderDevice`,
+  `GetRenderResourceManager`); the descriptor manager is no longer a graph service, and the
+  descriptor heap arrives injected.
 - `RenderGraphNodeContext` exposes `meshManager`, which is meaningless to a non-renderer.
 - No implicit data-flow edges: sharing a resource does not order nodes (`docs/RenderGraph.md`).
 - `RenderGraphBuilder` owns a single in-flight slot (`inFlightCount == 1`), so a second
@@ -190,7 +189,7 @@ Each milestone lists its deliverable and its acceptance check.
 - CMake project, Muyo submodule, `.clang-format` / `.clang-tidy` / `san.supp` copied from
   Muyo, a `scripts/sanity.sh` analogue, English `docs/`.
 - Headless host modelled on `src/tests/GraphicsTestEnv.h`: device, memory allocator, resource
-  manager, descriptor manager. No window.
+  manager, descriptor heap. No window.
 - One compute node through `RenderGraphBuilder` + `Execute()`.
 
 **Acceptance:** `./build/muyo_llm --smoke` exits 0 and prints the compiled node/resource list.
@@ -354,7 +353,9 @@ with teeth, and the standard verification table. `AGENTS.md` updates may go stra
 - Muyo #68 **landed** (`0617102`): the submodule plus `add_subdirectory` integration configures. What
   remains from it is prerequisites rather than blockers — the Vulkan SDK on the environment for
   `slangc`/`glslangValidator`, network at configure for VMA, and global third-party target names — filed
-  as Muyo #73, which also carries the install/export set we are not waiting for.
+  as Muyo #73, which also carries the install/export set we are not waiting for. The SDK is now a
+  **version** requirement too: the graph path needs `VK_EXT_descriptor_heap` headers and a `glslc`
+  that accepts `GL_EXT_descriptor_heap` (1.4.363+), not merely any SDK.
 - File (or fold into #53) shader-source injection.
 - `docs/Assessment.md` lives in this repository (decided).
 - muyo-llm is registered in Muyo as a first-party architecture-validation consumer; Muyo's

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -22,7 +23,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -57,7 +57,7 @@ int RunGetRows()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -71,14 +71,12 @@ int RunGetRows()
     builder.AddResource("EmbeddingIndices", buffer(1, sizeof(int32_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
     builder.AddResource("EmbeddingOutput", buffer(K_EMBEDDING_DIM, sizeof(float), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto readUse = [&binding](const char* handle, uint32_t index)
+    const auto readUse = [](const char* handle, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = ResourceIOType::READ,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     RenderGraphNodeCreateInfo gatherPass = {.nodeName = "LlamaGetRows",
@@ -90,8 +88,7 @@ int RunGetRows()
                                                     ResourceUse{.handle = ResourceHandle("EmbeddingOutput"),
                                                                 .io = ResourceIOType::READ_WRITE,
                                                                 .usage = ResourceUsage::STORAGE_BUFFER,
-                                                                .kind = ResourceKind::BUFFER,
-                                                                .descriptorBinding = binding(llama_add_bindings::D)},
+                                                                .kind = ResourceKind::BUFFER},
                                                 },
                                             .shaderNames = {"get_rows_f32.comp"},
                                             .execute = [](RenderGraphNodeContext& ctx)
@@ -129,9 +126,13 @@ int RunGetRows()
                                                 pushConstants.param1 = 0.0F;
                                                 pushConstants.param2 = 0.0F;
                                                 pushConstants.param3 = 0;
-                                                vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout,
-                                                                   VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                                                                   sizeof(pushConstants), &pushConstants);
+                                                SetHeapIndex(pushConstants.heap, llama_add_bindings::A, ctx,
+                                                             "EmbeddingWeight", ResourceUsage::STORAGE_BUFFER);
+                                                SetHeapIndex(pushConstants.heap, llama_add_bindings::B, ctx,
+                                                             "EmbeddingIndices", ResourceUsage::STORAGE_BUFFER);
+                                                SetHeapIndex(pushConstants.heap, llama_add_bindings::D, ctx,
+                                                             "EmbeddingOutput", ResourceUsage::STORAGE_BUFFER);
+                                                PushData(ctx, pushConstants);
 
                                                 // ggml dispatches `{ne00, ne10, ne11 * ne12}` against wg_denoms `{512,
                                                 // 1, 1}`.

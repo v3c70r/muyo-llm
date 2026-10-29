@@ -7,7 +7,7 @@ namespace muyo_llm
 /// `add.comp`'s `push_constant` block, from `generic_binary_head.glsl`.
 ///
 /// This is half of the shader's contract; the other half is the compile-time `-D` set in
-/// `CMakeLists.txt` and the descriptor bindings the node declares. The layout is fixed by the
+/// `CMakeLists.txt` and the `heap[]` slot values the node fills. The layout is fixed by the
 /// shader, so it is reproduced field for field and checked by `static_assert`. Getting a field
 /// wrong does not fail — it reads the wrong stride and produces a wrong number.
 ///
@@ -35,14 +35,20 @@ struct LlamaAddPushConstants
     float param1;
     float param2;
     int32_t param3;
+
+    /// Descriptor-heap indices in `llama_add_bindings` order (A, B, D, PARTIAL_SUMS). The graph is
+    /// heap-only, so the node resolves them with `RenderGraphNodeContext::GetHeapIndex` and records
+    /// them as push data; the shader indexes its `layout(descriptor_heap)` arrays with them.
+    uint32_t heap[4];
 };
 
-/// 29 four-byte fields. A change here is a change to a shader we do not own.
-static_assert(sizeof(LlamaAddPushConstants) == 29 * sizeof(uint32_t),
+/// 33 four-byte fields (29 shader fields + 4 heap indices). A change here is a change to a shader we
+/// do not own.
+static_assert(sizeof(LlamaAddPushConstants) == 33 * sizeof(uint32_t),
               "LlamaAddPushConstants no longer matches generic_binary_head.glsl's `parameter` block");
 
-/// Descriptor bindings of `add.comp` / `generic_binary_head.glsl`, in one place so the node
-/// declarations and the push-constant/define sets cannot drift apart.
+/// Descriptor-heap slots of `add.comp` / `generic_binary_head.glsl`, in one place so the node's
+/// push-data table and the shader's `heap[]` indices cannot drift apart.
 namespace llama_add_bindings
 {
 constexpr uint32_t A = 0;
@@ -81,13 +87,17 @@ struct LlamaMatVecPushConstants
     uint32_t ne12;
     uint32_t broadcast2;
     uint32_t broadcast3;
+
+    /// Descriptor-heap indices in `llama_mat_vec_bindings` order (A, B, D, FUSE0, FUSE1).
+    uint32_t heap[5];
 };
 
-/// 13 four-byte fields, matching `vk_mat_vec_push_constants` in ggml-vulkan-push-constants.h.
-static_assert(sizeof(LlamaMatVecPushConstants) == 13 * sizeof(uint32_t),
+/// 18 four-byte fields (13 shader fields + 5 heap indices), matching
+/// `vk_mat_vec_push_constants` in ggml-vulkan-push-constants.h plus the heap table.
+static_assert(sizeof(LlamaMatVecPushConstants) == 18 * sizeof(uint32_t),
               "LlamaMatVecPushConstants no longer matches mul_mat_vec_base.glsl's `parameter` block");
 
-/// Descriptor bindings of `mul_mat_vec.comp` / `mul_mat_vec_iface.glsl`. `FUSE0`/`FUSE1` are
+/// Descriptor-heap slots of `mul_mat_vec.comp` / `mul_mat_vec_iface.glsl`. `FUSE0`/`FUSE1` are
 /// declared unconditionally and only read when the matching `fusionFlags` bit is set.
 namespace llama_mat_vec_bindings
 {
@@ -150,13 +160,17 @@ struct LlamaRopePushConstants
     uint32_t nb13;
     uint32_t aOffset;
     uint32_t dOffset;
+
+    /// Descriptor-heap indices in `llama_rope_bindings` order (X, Y, Z, D, I).
+    uint32_t heap[5];
 };
 
-/// 30 four-byte words, matching `vk_op_rope_push_constants` in ggml-vulkan-push-constants.h.
-static_assert(sizeof(LlamaRopePushConstants) == 30 * sizeof(uint32_t),
+/// 35 four-byte words (30 shader fields + 5 heap indices), matching
+/// `vk_op_rope_push_constants` in ggml-vulkan-push-constants.h plus the heap table.
+static_assert(sizeof(LlamaRopePushConstants) == 35 * sizeof(uint32_t),
               "LlamaRopePushConstants no longer matches rope_params.glsl's `rope_params` struct");
 
-/// Descriptor bindings of `rope_head.glsl`.
+/// Descriptor-heap slots of `rope_head.glsl`.
 namespace llama_rope_bindings
 {
 constexpr uint32_t X = 0;  ///< Input rows.
@@ -196,19 +210,30 @@ struct LlamaGluPushConstants
     uint32_t ne2_012mp, ne2_012L;
     uint32_t ne2_01mp, ne2_01L;
     uint32_t ne2_0mp, ne2_0L;
+
+    /// Descriptor-heap indices in `llama_glu_bindings` order (A, B, D).
+    uint32_t heap[3];
 };
 
-/// 27 four-byte words, matching `vk_op_glu_push_constants` in ggml-vulkan-push-constants.h.
-static_assert(sizeof(LlamaGluPushConstants) == 27 * sizeof(uint32_t),
+/// 30 four-byte words (27 shader fields + 3 heap indices), matching
+/// `vk_op_glu_push_constants` in ggml-vulkan-push-constants.h plus the heap table.
+static_assert(sizeof(LlamaGluPushConstants) == 30 * sizeof(uint32_t),
               "LlamaGluPushConstants no longer matches glu_head.glsl's `parameter` struct");
 
-/// Descriptor bindings of `glu_head.glsl`.
+/// Descriptor-heap slots of `glu_head.glsl`.
 namespace llama_glu_bindings
 {
 constexpr uint32_t A = 0;
 constexpr uint32_t B = 1;  ///< The second operand; only read in split mode.
 constexpr uint32_t D = 2;
 }  // namespace llama_glu_bindings
+
+/// Descriptor-heap slots of `copy.comp` / `generic_unary_head.glsl` (A, D).
+namespace llama_copy_bindings
+{
+constexpr uint32_t A = 0;
+constexpr uint32_t D = 1;
+}  // namespace llama_copy_bindings
 
 /// `glu_main.glsl`'s `p.mode` values: 0 default (one input split in half), 1 swapped, 2 split
 /// (two separate inputs). A transformer's gate/up pair is split.
@@ -229,13 +254,17 @@ struct LlamaGenericHeadPushConstants
     float param2;
     float param3;
     float param4;
+
+    /// Descriptor-heap indices in `llama_argmax_bindings` order (A, D).
+    uint32_t heap[2];
 };
 
-/// 6 four-byte words, matching `vk_op_push_constants` in ggml-vulkan-push-constants.h.
-static_assert(sizeof(LlamaGenericHeadPushConstants) == 6 * sizeof(uint32_t),
+/// 8 four-byte words (6 shader fields + 2 heap indices), matching
+/// `vk_op_push_constants` in ggml-vulkan-push-constants.h plus the heap table.
+static_assert(sizeof(LlamaGenericHeadPushConstants) == 8 * sizeof(uint32_t),
               "LlamaGenericHeadPushConstants no longer matches generic_head.glsl's `parameter` block");
 
-/// Descriptor bindings of `argmax.comp`.
+/// Descriptor-heap slots of `argmax.comp`.
 namespace llama_argmax_bindings
 {
 constexpr uint32_t A = 0;  ///< Input row (`float`).
@@ -271,13 +300,17 @@ struct LlamaSoftMaxPushConstants
     uint32_t nHeadLog2;
     uint32_t nrowsX;
     uint32_t hasSinks;
+
+    /// Descriptor-heap indices in `llama_soft_max_bindings` order (X, Y, Z, D).
+    uint32_t heap[4];
 };
 
-/// 17 four-byte words, matching `vk_op_soft_max_push_constants` in ggml-vulkan-push-constants.h.
-static_assert(sizeof(LlamaSoftMaxPushConstants) == 17 * sizeof(uint32_t),
+/// 21 four-byte words (17 shader fields + 4 heap indices), matching
+/// `vk_op_soft_max_push_constants` in ggml-vulkan-push-constants.h plus the heap table.
+static_assert(sizeof(LlamaSoftMaxPushConstants) == 21 * sizeof(uint32_t),
               "LlamaSoftMaxPushConstants no longer matches soft_max.comp's `parameter` block");
 
-/// Descriptor bindings of `soft_max.comp`. Y and Z are declared unconditionally; Y is the additive
+/// Descriptor-heap slots of `soft_max.comp`. Y and Z are declared unconditionally; Y is the additive
 /// mask (read when `KY > 0`) and Z the attention sinks (read when `hasSinks != 0`).
 namespace llama_soft_max_bindings
 {

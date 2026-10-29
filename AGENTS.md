@@ -23,10 +23,19 @@ product: throughput is out of scope, and the deliverable is as much the findings
 ## Building
 
 Muyo is embedded via `add_subdirectory`. The submodule is the shipping path; a development checkout
-of Muyo can be substituted without re-initialising submodules:
+of Muyo can be substituted without re-initialising submodules.
+
+The Vulkan SDK must be **on the environment and sourced** (`source <sdk>/setup-env.sh`), 1.4.363 or
+newer. Since Muyo's B1b the graph is descriptor-heap-only: configuring needs headers that define
+`VK_EXT_descriptor_heap`, the shader build needs a `glslc` that accepts `GL_EXT_descriptor_heap`, and
+running needs the SDK's loader and validation layers (an older loader rejects the heap structures).
+The device must expose `VK_EXT_descriptor_heap` and `VK_KHR_shader_untyped_pointers`; llvmpipe does.
+CMake fails with a named message if the headers are too old, rather than letting Muyo's headers
+produce the diagnosis.
 
 ```bash
 # against the submodule (after `git submodule update --init --recursive`)
+source "$VULKAN_SDK/setup-env.sh"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug && cmake --build build --target muyo_llm -j"$(nproc)"
 
 # or against a Muyo worktree

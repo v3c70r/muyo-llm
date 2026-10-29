@@ -38,6 +38,8 @@ layout (push_constant) uniform parameter
     uint broadcast2;
     uint broadcast3;
 #endif
+    // Descriptor-heap indices in `llama_mat_vec_bindings` order (A, B, D, FUSE0, FUSE1).
+    uint heap[5];
 } p;
 
 #ifdef MUL_MAT_ID

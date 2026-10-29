@@ -13,8 +13,8 @@ polish; confidence `confirmed` / `needs runtime validation` / `design preference
 These are as important as the gaps, because they are the guarantees `docs/Consumers.md` claims.
 
 - **The graph is given its services, not globals (#53).** Muyo `0294326` replaced the 15 singleton
-  lookups inside `src/RenderGraph/` with a `RenderGraphServices{device, resourceManager,
-  descriptorManager}` constructor. Every `RenderGraphBuilder` in this repo is now built with it
+  lookups inside `src/RenderGraph/` with a `RenderGraphServices` constructor (today
+  `{device, resourceManager, descriptorHeap}`, plus optional caches). Every `RenderGraphBuilder` in this repo is now built with it
   (`src/GraphServices.h`) rather than the transitional `(VkRenderDevice*)` shim, so the graph no
   longer reaches for the engine's globals on the consumer's path. This is the switch Muyo's #53
   commit says flips the `injected, not global` row in `docs/Consumers.md` from *gap* to *holds*;
@@ -24,7 +24,7 @@ These are as important as the gaps, because they are the guarantees `docs/Consum
   `target_link_libraries(muyo_llm PRIVATE muyo_rg)` configures and builds from outside the tree.
   Evidence: this repository's first configure.
 - **Compute-only, windowless execution works end to end.** Device, allocator, resource manager,
-  descriptor manager, then a graph-owned storage buffer written by a compute node and read back on
+  descriptor heap, then a graph-owned storage buffer written by a compute node and read back on
   the host. No surface, no swapchain, no frame. Evidence: `muyo_llm --smoke` → `[smoke] OK`.
 - **Specialization constants (#62) and cooperative-matrix enablement (#63) hold.** The device
   reports `cooperative matrix: available` on the development machine (AMDVLK). Evidence:
@@ -53,7 +53,11 @@ implementation), so an embedder inherits it. Same class as the `muyo_rg`/`muyo` 
 
 ## F2 — a compute-only graph still creates the graphics semantic set layouts
 
-**A, confirmed; subsumed by #15, not filed.** Constructing a `RenderGraphBuilder` constructs
+**A, confirmed; subsumed by #15, not filed. Historical:** B1b deleted the descriptor-set path
+(`2ef6505`), so the layouts this entry is about no longer exist. Kept as the record of what the
+graph cost a compute-only consumer before the heap.
+
+Constructing a `RenderGraphBuilder` constructs
 `RenderGraphDescriptorSets`, whose constructor unconditionally creates the three built-in semantic
 set **layouts** (`PER_VIEW`, `PER_OBJ`, `MATERIAL`) — `RenderGraphDescriptorSets.h`. A graph whose
 every node is compute with explicit `DescriptorBinding`s never references any of them. The cost is
@@ -290,6 +294,12 @@ slices; it is also how a single-arena weight layout is bound. The deferred "base
 execution" half would be the thing that lets one graph node rotate through layers, and nothing here
 needs it.
 
+Under B1b the "binding" is a heap index in push data rather than a descriptor-set slot, but it is
+still fixed at `Build()` for a graph-owned or imported resource: the index is a static descriptor,
+and only a ring-allocated imported resource can be re-pointed per execution (#83). The 436-node
+build still holds; F18 is the device-range limit that stops the *forward pass* from completing on
+llvmpipe, not a graph limit.
+
 Related: Muyo inserts no barrier between the last node and a host `Map()`, so the `argmax` node ends
 with its own compute-to-host `VkMemoryBarrier2` (Finding F4) — the only place this model has to
 reach past the graph API.
@@ -359,3 +369,107 @@ lesson for the assessment: the missing resource-range expression was real for *s
 first thing a decode engine needs — write this row into that arena at this offset — was already
 expressible through per-dispatch push constants, because llama.cpp's shaders were built to be
 driven that way. The graph did not have to grow an API for it.
+
+## F15 — GLSL descriptor-heap shaders need a non-uniform-indexing feature the device does not enable
+
+**A, confirmed, worked around.** Against Muyo `b7ce1fe`, `--smoke` aborts in `vkCreateShaderModule`:
+
+```
+SPIR-V Capability StorageBufferArrayNonUniformIndexing was declared, but one of the following
+requirements must be met (VkPhysicalDeviceVulkan12Features::shaderStorageBufferArrayNonUniformIndexing).
+```
+
+glslang emits `ShaderNonUniform` plus `StorageBufferArrayNonUniformIndexing` for a dynamically
+indexed `layout(descriptor_heap)` array. `VkRenderDevice::CreateDevice` enables
+`shaderSampledImageArrayNonUniformIndexing` but not the storage-buffer counterpart, and a consumer
+cannot add it: the `VkPhysicalDeviceVulkan12Features` struct is already in the chain
+(`VkRenderDevice.cpp:374`), the same ownership problem as F8. Muyo's own heap shaders are Slang and
+reach a resource through a function-local `.Handle()`, which emits neither capability, so its tests
+do not exercise the GLSL path.
+
+The index in this consumer is one word of push data, identical for every invocation, so the
+non-uniform semantics the capability promises are not used. `tools/strip_nonuniform_capability.py`
+removes the two capability lines after `glslc`; `spirv-val --target-env vulkan1.4` accepts the
+result and all 12 modes pass (`scripts/sanity.sh`). Evidence: `muyo_llm --smoke`.
+
+Upstream: enable `shaderStorageBufferArrayNonUniformIndexing` (and the other array-indexing features
+the heap permits) at device creation, or state that a GLSL heap client may only use constant
+indices. The Slang path is not a substitute for GLSL clients.
+
+## F16 — a heap-bound buffer must carry `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT`, and the graph does not add it
+
+**C, confirmed, worked around.** A graph-owned buffer declared with `VK_BUFFER_USAGE_STORAGE_BUFFER_BIT`
+only, then bound by a node, aborts at `Build()` when the heap service calls `vkGetBufferDeviceAddress`:
+
+```
+pInfo->buffer (VkBuffer ...) was created with VK_BUFFER_USAGE_2_STORAGE_BUFFER_BIT but requires
+VK_BUFFER_USAGE_2_SHADER_DEVICE_ADDRESS_BIT.
+```
+
+The design note says buffers placed in the resource heap need the bit
+(`docs/DescriptorHeap-Bindless-Design.md:379`); `AddResource`/`ImportResource` do not OR it in, and
+the failure names the buffer only as a handle. Every buffer declaration in this repo now carries the
+bit (15 sites in `src/`). Upstream: add it to the allocation usage when the heap will bind the
+resource, or reject the declaration at `Build()` naming the resource and the missing usage. Note the
+same requirement applies to imported buffers, where the graph cannot change the usage at all.
+
+## F17 — `muyo_rg` does not propagate the Vulkan include directory to an embedder
+
+**A, confirmed, worked around.** With the 1.4.363 SDK on `CMAKE_PREFIX_PATH`, Muyo's own targets
+compile against the SDK headers, but the consumer's translation units still resolve
+`<vulkan/vulkan.h>` from `/usr/include` (1.4.313) and fail on every descriptor-heap type
+(`PFN_vkCmdPushDataEXT`, `VkPhysicalDeviceDescriptorHeapPropertiesEXT`, ...). `find_package(Vulkan)`
+resolves the SDK, but `target_link_libraries(muyo_llm PRIVATE muyo_rg)` carries neither
+`${Vulkan_INCLUDE_DIRS}` nor a version floor, although Muyo's public headers include
+`<vulkan/vulkan.h>`.
+
+Workaround: the consumer adds `${Vulkan_INCLUDE_DIRS}` and a configure-time compile check that fails
+with a named message. Upstream: make the Vulkan headers a PUBLIC usage requirement of `muyo`/
+`muyo_rg`, or state the version floor in the embed instructions. The shader build has the same shape:
+a distribution `glslc` accepts the command line but not `GL_EXT_descriptor_heap`, so the consumer
+prefers the SDK's `glslc` (CMakeLists.txt).
+
+## F18 — a descriptor range larger than `maxStorageBufferRange` is rejected, and `--forward` hits it on llvmpipe
+
+**C, pre-existing, device-limited.** `--forward testdata/qwen2.5-0.5b-instruct-fp16.gguf` binds the
+272,269,312-byte embedding tensor as one storage-buffer descriptor. llvmpipe reports
+`maxStorageBufferRange = 134,217,728`, so validation aborts:
+
+- heap path (`b7ce1fe`): `vkWriteResourceDescriptorsEXT(): pResources[0].data.pAddressRange->size
+  (272269312) is greater than maxStorageBufferRange (134217728)`;
+- descriptor-set path (old pin `64947cd`, before this repo's `build/` was rebuilt): `vkUpdateDescriptorSets():
+  pBufferInfo[0].range (272269312) is greater than maxStorageBufferRange`.
+
+So the migration did not introduce it; the full-model path was already blocked on this device. The
+12 small modes are unaffected, and `--embed`/`--model` succeed. `shader64BitIndexing` would relax the
+limit, but `VK_EXT_shader_64bit_indexing` is not exposed by llvmpipe and the consumer cannot enable
+it anyway (the feature-chain ownership of F8). Upstream: clamp or split a descriptor range at
+`Build()`, or enable `shader64BitIndexing` when the device exposes it. Consumer-side: a weight layout
+split at the limit is the model-side fix.
+
+## F19 — the descriptor-heap defaults are frame-sized, and exhaustion names neither the count nor the limit
+
+**C, confirmed, worked around.** The full-model forward (`--forward … -i -n 64`) aborts at `Build()`
+on RADV:
+
+```
+[fail] DescriptorHeapService: static descriptor region exhausted
+```
+
+`DescriptorHeapService::Config` defaults to 256 static buffer slots and 32 ring slots per execution,
+which is a frame-sized graph. qwen2.5-0.5B needs **371** distinct static storage-buffer descriptors
+before the first token (291 weight tensors, 24 layers x `{kcache, vcache, scores}` = 72, and 8 global
+I/O/dummy buffers), and about **820** per-execution descriptor acquisitions per token for the
+transient intermediates; the ring is consumed per use, not deduplicated, so 32 is far short. The
+exception names neither the region's capacity nor the number needed, and the graph cannot discover
+the requirement until it is already allocating.
+
+Workaround: `HeadlessContext` initialises the heap with
+`{.imageSlots = 64, .bufferSlots = 2048, .accelerationSlots = 8, .samplerSlots = 16,
+.ringSlots = 2048, .inFlightCount = 1}`. That is a host policy decision, which is the right place for
+it, but the default cannot serve the workload the library exists to validate. Upstream: either size
+the static region from the compiled graph at `Build()` (the count is known before the first
+`Acquire*`), or fail with the needed and available counts; the ring is the same problem at `Execute`.
+
+LLVMPIPE note: this host cannot reach the failure because the 272 MB embedding tensor trips F18 first;
+the RADV report is the evidence for F19.

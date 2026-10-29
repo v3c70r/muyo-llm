@@ -23,6 +23,22 @@ add_subdirectory("${MUYO_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/muyo")
 
 find_package(Vulkan REQUIRED)
 
+# Muyo's graph path is descriptor-heap-only and its public headers use types that only Vulkan
+# headers with VK_EXT_descriptor_heap define (SDK 1.4.363 or newer). Check it here, where the
+# message can name the cause, rather than letting 400 errors in Muyo's headers be the diagnosis.
+include(CheckCXXSourceCompiles)
+set(CMAKE_REQUIRED_INCLUDES ${Vulkan_INCLUDE_DIRS})
+check_cxx_source_compiles(
+    "#include <vulkan/vulkan.h>\nint main() { VkPhysicalDeviceDescriptorHeapPropertiesEXT p{}; return p.sType; }"
+    MUYO_LLM_HAS_DESCRIPTOR_HEAP_HEADERS)
+unset(CMAKE_REQUIRED_INCLUDES)
+if (NOT MUYO_LLM_HAS_DESCRIPTOR_HEAP_HEADERS)
+    message(FATAL_ERROR
+        "The Vulkan headers at ${Vulkan_INCLUDE_DIRS} do not define VK_EXT_descriptor_heap. "
+        "Muyo's graph path needs an SDK with it (1.4.363+): source <sdk>/setup-env.sh, or pass "
+        "-DCMAKE_PREFIX_PATH=<sdk> -DVULKAN_SDK=<sdk>.")
+endif()
+
 # ── muyo_llm ─────────────────────────────────────────────────────────────────
 file(GLOB_RECURSE MUYO_LLM_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
@@ -50,14 +66,37 @@ target_include_directories(muyo_llm PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 # dependency of muyo now (its commit 6f8d65b, the fix for muyo-llm finding F1), so an embedder
 # inherits it and linking it here would be a workaround for a bug that no longer exists.
 target_link_libraries(muyo_llm PRIVATE muyo_rg muyo ${Vulkan_LIBRARIES})
+# Muyo's public headers include <vulkan/vulkan.h> and, since the descriptor-heap track, use
+# extension types that only the 1.4.363+ headers define. FindVulkan resolves those from
+# $VULKAN_SDK, but muyo_rg does not propagate its include directory, so an embedder that links
+# the library still compiles its own translation units against /usr/include and fails on
+# `PFN_vkCmdPushDataEXT`. Naming the include dir here is the consumer-side half of that gap.
+target_include_directories(muyo_llm PRIVATE ${Vulkan_INCLUDE_DIRS})
 target_compile_options(muyo_llm PRIVATE -Wall)
 
 # ── Shaders ──────────────────────────────────────────────────────────────────
 # The graph loads `<name>.spv` from `shaders/` relative to the working directory
 # (ShaderAsset.h), so the SPIR-V lands next to the binary and the program is run from
 # the build directory. llama.cpp's shaders arrive in M1; M0 compiles only our own.
-find_program(GLSLC_EXECUTABLE NAMES glslc REQUIRED)
+# The descriptor-heap track raises the floor to Vulkan 1.4 and needs a glslc new enough to accept
+# GL_EXT_descriptor_heap. FindVulkan already resolves the SDK's glslc from $VULKAN_SDK; falling back
+# to PATH would silently pick a distribution glslc that does not know the extension.
+if (Vulkan_GLSLC_EXECUTABLE)
+    set(GLSLC_EXECUTABLE "${Vulkan_GLSLC_EXECUTABLE}")
+else()
+    find_program(GLSLC_EXECUTABLE NAMES glslc REQUIRED)
+endif()
 set(MUYO_LLM_SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+
+# glslc emits ShaderNonUniform + StorageBufferArrayNonUniformIndexing for a dynamically indexed
+# `layout(descriptor_heap)` array. The device does not enable that Vulkan 1.2 feature and a consumer
+# cannot (Muyo's CreateDevice owns the feature chain), so the build removes the two capability lines
+# the uniform push-data index does not need. See tools/strip_nonuniform_capability.py and F15.
+get_filename_component(MUYO_LLM_VULKAN_BIN "${GLSLC_EXECUTABLE}" DIRECTORY)
+find_program(SPIRV_DIS_EXECUTABLE NAMES spirv-dis HINTS "${MUYO_LLM_VULKAN_BIN}" NO_DEFAULT_PATH REQUIRED)
+find_program(SPIRV_AS_EXECUTABLE NAMES spirv-as HINTS "${MUYO_LLM_VULKAN_BIN}" NO_DEFAULT_PATH REQUIRED)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(MUYO_LLM_STRIP_NONUNIFORM "${CMAKE_CURRENT_SOURCE_DIR}/tools/strip_nonuniform_capability.py")
 
 # Own shaders: plain, one stage, no defines. Not recursive, so the vendored llama.cpp
 # shaders under shaders/llama/ (which each need their own -D set) are handled separately below.
@@ -71,8 +110,10 @@ foreach (SHADER_SOURCE ${MUYO_LLM_SHADER_SOURCES})
     add_custom_command(
         OUTPUT ${SPIRV}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${MUYO_LLM_SHADER_OUTPUT_DIR}"
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.3 -fshader-stage=compute ${SHADER_SOURCE} -o ${SPIRV}
-        DEPENDS ${SHADER_SOURCE}
+        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.4 -fshader-stage=compute ${SHADER_SOURCE} -o ${SPIRV}
+        COMMAND ${Python3_EXECUTABLE} "${MUYO_LLM_STRIP_NONUNIFORM}" --dis "${SPIRV_DIS_EXECUTABLE}"
+                --as "${SPIRV_AS_EXECUTABLE}" ${SPIRV}
+        DEPENDS ${SHADER_SOURCE} "${MUYO_LLM_STRIP_NONUNIFORM}"
         COMMENT "Compiling ${SHADER_NAME}"
         VERBATIM)
     list(APPEND MUYO_LLM_SPIRV_FILES ${SPIRV})
@@ -81,9 +122,9 @@ endforeach()
 # ── Vendored llama.cpp shaders ───────────────────────────────────────────────
 # Each needs its own define set, taken verbatim from llama.cpp's generator
 # (ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp). The defines are the shader's
-# contract: the graph reflects bindings, push constants and specialization constants,
-# but the operand types are chosen here at compile time. Target vulkan1.2 to match
-# llama.cpp's non-coopmat path; cooperative-matrix variants use vulkan1.3.
+# contract: the graph reflects push-constant ranges and specialization constants, but the
+# operand types are chosen here at compile time. Target vulkan1.4 because the heap path is
+# the graph's only binding model now (no sets, no pipeline layout).
 set(LLAMA_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders/llama")
 
 # Compile one vendored shader. NAME is the output stem, so `add_f32` produces
@@ -98,9 +139,11 @@ function(muyo_llm_llama_shader name source defines)
     add_custom_command(
         OUTPUT ${spv}
         COMMAND ${CMAKE_COMMAND} -E make_directory "${MUYO_LLM_SHADER_OUTPUT_DIR}"
-        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.2 -fshader-stage=compute ${flags}
+        COMMAND ${GLSLC_EXECUTABLE} --target-env=vulkan1.4 -fshader-stage=compute ${flags}
                 "${LLAMA_SHADER_DIR}/${source}" -o ${spv}
-        DEPENDS "${LLAMA_SHADER_DIR}/${source}" ${ARGN}
+        COMMAND ${Python3_EXECUTABLE} "${MUYO_LLM_STRIP_NONUNIFORM}" --dis "${SPIRV_DIS_EXECUTABLE}"
+                --as "${SPIRV_AS_EXECUTABLE}" ${spv}
+        DEPENDS "${LLAMA_SHADER_DIR}/${source}" "${MUYO_LLM_STRIP_NONUNIFORM}" ${ARGN}
         COMMENT "Compiling ${name}.comp (llama.cpp)"
         VERBATIM)
     set_property(GLOBAL APPEND PROPERTY MUYO_LLM_LLAMA_SPIRV ${spv})
@@ -176,9 +219,11 @@ muyo_llm_llama_shader(mul_mat_vec_f32_f32_f32 mul_mat_vec.comp
     "${LLAMA_SHADER_DIR}/mul_mat_vec_base.glsl" "${LLAMA_SHADER_DIR}/mul_mat_vec_iface.glsl"
     "${LLAMA_SHADER_DIR}/dequant_funcs.glsl" "${LLAMA_SHADER_DIR}/types.glsl")
 
-# mul_mm_f32_f16: the F32-A x F16-B GEMM variant, compiled as evidence that glslc and the
-# graph's reflection handle its 74 specialization constants. Its tile spec-constant values
-# and grid contract are the matmul work in M2, so this variant is not dispatched yet.
+# mul_mm_f32_f16: the F32-A x F16-B GEMM variant, compiled as evidence that glslc handles its 74
+# specialization constants. Its tile spec-constant values and grid contract are the matmul work in
+# M2, so this variant is not dispatched yet. It is the one shader still written against the deleted
+# descriptor-set path (it declares set/bindings and has no heap[] table), so the heap-only graph
+# cannot load it; converting it is part of the M2 GEMM work, not of the B1b migration.
 muyo_llm_llama_shader(mul_mm_f32_f16 mul_mm.comp
     "DATA_A_F32;LOAD_VEC_A=8;LOAD_VEC_B=8;B_TYPE=mat2x4;B_TYPE_SCALAR=float16_t;B_TYPEV4=f16vec4;D_TYPE=float;FLOAT_TYPE=float;FLOAT_TYPEV2=vec2;FLOAT_TYPEV4=vec4;FLOAT_TYPEV8=mat2x4;ACC_TYPE=float;ACC_TYPEV2=vec2;ACC_TYPE_VEC4=vec4"
     "${LLAMA_SHADER_DIR}/types.glsl" "${LLAMA_SHADER_DIR}/dot_product_funcs.glsl"

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -22,7 +23,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -53,10 +53,12 @@ struct CopyPushConstants
     float param1, param2, param3, param4;
     uint32_t ne0_012mp, ne0_01mp, ne0_0mp, ne0_Ls;
     uint32_t ne1_012mp, ne1_01mp, ne1_0mp, ne1_Ls;
+    /// Descriptor-heap indices in `llama_copy_bindings` order (A, D).
+    uint32_t heap[2];
 };
 
-/// 30 four-byte words, matching `vk_op_unary_push_constants` in ggml-vulkan-push-constants.h.
-static_assert(sizeof(CopyPushConstants) == 30 * sizeof(uint32_t),
+/// 32 four-byte words (30 shader fields + 2 heap indices).
+static_assert(sizeof(CopyPushConstants) == 32 * sizeof(uint32_t),
               "CopyPushConstants no longer matches generic_unary_head.glsl's `parameter` block");
 
 /// ggml's `pack_fastdiv_L`: three shift amounts packed into one word.
@@ -104,7 +106,7 @@ int RunKvCache()
     uint32_t position = 0;  ///< Updated between executions; read by the record-time callbacks.
 
     RenderGraphBuilder builder(GraphServices());
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [&](uint32_t count, uint32_t stride, VkBufferUsageFlags usage, ResourceLifetime lifetime)
     {
         return BufferResourceDesc{.count = count,
@@ -136,14 +138,12 @@ int RunKvCache()
     builder.AddResource("RopePositions", buffer(1, sizeof(int32_t), storage | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                                 ResourceLifetime::Persistent));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto use = [&binding](const char* handle, ResourceIOType io, uint32_t index)
+    const auto use = [](const char* handle, ResourceIOType io, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = io,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     // Node 1: rope the key **into the cache row** for the current position. rope's destination base
@@ -173,8 +173,13 @@ int RunKvCache()
             pushConstants.nb01 = K_KV_DIM;
             pushConstants.nb11 = K_KV_DIM;
             pushConstants.dOffset = position * K_KV_DIM;  // The cache row for this token.
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::X, ctx, "KeyVector", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::Y, ctx, "RopePositions",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::Z, ctx, "CopyScratch", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::D, ctx, "KeyCache", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_rope_bindings::I, ctx, "CopyScratch", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
         }};
 
@@ -220,8 +225,9 @@ int RunKvCache()
             const uint32_t s1 = PackFastDivL(pushConstants.ne01 * pushConstants.ne00, pushConstants.ne0_01mp);
             const uint32_t s0 = PackFastDivL(pushConstants.ne00, pushConstants.ne0_0mp);
             pushConstants.ne0_Ls = PackL(s12, s1, s0);
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_copy_bindings::A, ctx, "ValueVector", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_copy_bindings::D, ctx, "ValueCacheT", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
         }};
 
@@ -250,8 +256,14 @@ int RunKvCache()
             pushConstants.strideA = K_KV_DIM;
             pushConstants.strideB = K_KV_DIM;
             pushConstants.strideD = keysSoFar;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::A, ctx, "KeyCache", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::B, ctx, "Query", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::D, ctx, "Scores", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE0, ctx, "CopyScratch",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE1, ctx, "CopyScratch",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, keysSoFar, 1, 1);
         }};
 
@@ -274,8 +286,13 @@ int RunKvCache()
             pushConstants.ne02 = 1;
             pushConstants.scale = 1.0F / std::sqrt(static_cast<float>(K_KV_DIM));
             pushConstants.nrowsX = 1;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::X, ctx, "Scores", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Y, ctx, "SoftMaxMask",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Z, ctx, "SoftMaxSinks",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::D, ctx, "Probs", ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);
         }};
 
@@ -306,8 +323,15 @@ int RunKvCache()
             pushConstants.strideA = K_MAX_SEQ;
             pushConstants.strideB = K_MAX_SEQ;
             pushConstants.strideD = K_KV_DIM;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::A, ctx, "ValueCacheT",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::B, ctx, "Probs", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::D, ctx, "AttnOut", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE0, ctx, "CopyScratch",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_mat_vec_bindings::FUSE1, ctx, "CopyScratch",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
             vkCmdDispatch(ctx.commandBuffer, K_KV_DIM, 1, 1);
         }};
 

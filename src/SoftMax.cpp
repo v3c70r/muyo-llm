@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "GraphServices.h"
+#include "HeapIndices.h"
 #include "LlamaContracts.h"
 #include "RenderGraph/RenderGraphBuilder.h"
 #include "RenderGraph/RenderGraphNodeContext.h"
@@ -24,7 +25,6 @@ using Muyo::BufferResource;
 using Muyo::GetRenderDevice;
 using Muyo::GetRenderResourceManager;
 using Muyo::RenderGraph::BufferResourceDesc;
-using Muyo::RenderGraph::DescriptorBinding;
 using Muyo::RenderGraph::QueueType;
 using Muyo::RenderGraph::RenderGraphBuilder;
 using Muyo::RenderGraph::RenderGraphNodeContext;
@@ -56,7 +56,7 @@ int RunSoftMax()
 
     RenderGraphBuilder builder(GraphServices());
 
-    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    const VkBufferUsageFlags storage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     const auto buffer = [](uint32_t count, uint32_t stride, VkBufferUsageFlags usage)
     {
         return BufferResourceDesc{.count = count,
@@ -72,14 +72,12 @@ int RunSoftMax()
     builder.AddResource("SoftMaxSinks", buffer(1, sizeof(float), storage));
     builder.AddResource("SoftMaxOutput", buffer(K_COLUMNS, sizeof(float), storage));
 
-    const auto binding = [](uint32_t index) { return DescriptorBinding{.set = 0, .binding = index}; };
-    const auto readUse = [&binding](const char* handle, uint32_t index)
+    const auto readUse = [](const char* handle, uint32_t /*bindingSlot*/)
     {
         return ResourceUse{.handle = ResourceHandle(handle),
                            .io = ResourceIOType::READ,
                            .usage = ResourceUsage::STORAGE_BUFFER,
-                           .kind = ResourceKind::BUFFER,
-                           .descriptorBinding = binding(index)};
+                           .kind = ResourceKind::BUFFER};
     };
 
     RenderGraphNodeCreateInfo softmaxPass = {
@@ -94,8 +92,7 @@ int RunSoftMax()
                 ResourceUse{.handle = ResourceHandle("SoftMaxOutput"),
                             .io = ResourceIOType::READ_WRITE,
                             .usage = ResourceUsage::STORAGE_BUFFER,
-                            .kind = ResourceKind::BUFFER,
-                            .descriptorBinding = binding(llama_soft_max_bindings::D)},
+                            .kind = ResourceKind::BUFFER},
             },
         .shaderNames = {"soft_max_f32.comp"},
         .specializationConstants = {{.id = llama_soft_max_spec_constants::BLOCK_SIZE, .value = K_BLOCK_SIZE}},
@@ -121,8 +118,14 @@ int RunSoftMax()
             pushConstants.nHeadLog2 = 0;
             pushConstants.nrowsX = 1;
             pushConstants.hasSinks = 0;
-            vkCmdPushConstants(ctx.commandBuffer, ctx.pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
-                               sizeof(pushConstants), &pushConstants);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::X, ctx, "Scores", ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Y, ctx, "SoftMaxMask",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::Z, ctx, "SoftMaxSinks",
+                         ResourceUsage::STORAGE_BUFFER);
+            SetHeapIndex(pushConstants.heap, llama_soft_max_bindings::D, ctx, "SoftMaxOutput",
+                         ResourceUsage::STORAGE_BUFFER);
+            PushData(ctx, pushConstants);
 
             // One workgroup per row.
             vkCmdDispatch(ctx.commandBuffer, 1, 1, 1);

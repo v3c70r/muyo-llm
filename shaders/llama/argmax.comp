@@ -9,8 +9,10 @@
 
 layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
 
-layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
-layout (binding = 1) writeonly buffer D {D_TYPE data_d[];};
+layout (descriptor_heap) readonly buffer A {A_TYPE data_a[];} aHeap[];
+layout (descriptor_heap) writeonly buffer D {D_TYPE data_d[];} dHeap[];
+#define data_a aHeap[p.heap[0]].data_a
+#define data_d dHeap[p.heap[1]].data_d
 
 layout (constant_id = 0) const uint BLOCK_SIZE = 32;
 
